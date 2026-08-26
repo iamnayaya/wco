@@ -1,0 +1,16 @@
+{
+  "name": "@wco/testing",
+  "version": "1.0.0",
+  "description": "WCO test utilities — factories, fakes, harnesses",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint \"src/**/*.ts\" --max-warnings 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.6.0"
+  }
+}

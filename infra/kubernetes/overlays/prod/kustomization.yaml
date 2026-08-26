@@ -1,0 +1,24 @@
+# Production: full replicas, strict budgets. Secrets come from External
+# Secrets Operator (AWS Secrets Manager) — never committed, never in Git.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: wco-prod
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: backend
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 6
+
+configMapGenerator:
+  - name: backend-config
+    literals:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - CORS_ORIGIN=https://app.wco.africa

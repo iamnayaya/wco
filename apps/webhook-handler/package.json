@@ -1,0 +1,42 @@
+{
+  "name": "@wco/webhook-handler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WCO Webhook Handler — high-throughput signature-verified webhook ingestion (WhatsApp, PSPs, carriers)",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/main.ts",
+    "start:prod": "node dist/main.js",
+    "lint": "eslint \"src/**/*.ts\" --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:unit": "jest --testPathPattern=tests/unit",
+    "clean": "rimraf dist .turbo"
+  },
+  "dependencies": {
+    "@wco/shared": "*",
+    "@wco/database": "*",
+    "amqplib": "^0.10.4",
+    "fastify": "^4.28.1",
+    "ioredis": "^5.4.1",
+    "pino": "^9.3.2"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.4",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.14.0",
+    "jest": "^29.7.0",
+    "pino-pretty": "^11.2.2",
+    "rimraf": "^5.0.7",
+    "tsx": "^4.16.2",
+    "ts-jest": "^29.2.3",
+    "typescript": "^5.5.4"
+  },
+  "jest": {
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "rootDir": ".",
+    "testRegex": "tests/.*\\.(spec|test).ts$",
+    "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+    "testEnvironment": "node"
+  }
+}

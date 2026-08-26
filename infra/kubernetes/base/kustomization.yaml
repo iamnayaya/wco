@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - backend-deployment.yaml
+  - webhook-handler-deployment.yaml
+  - frontend-deployment.yaml
+  - services.yaml
+  - hpa.yaml
+  - pod-disruption-budgets.yaml
+  - serviceaccount.yaml
+  - network-policy.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: wco
+  app.kubernetes.io/managed-by: argocd
+
+images:
+  - name: ghcr.io/wco/wco/backend
+    newTag: sha-0000000 # updated by ArgoCD Image Updater
+  - name: ghcr.io/wco/wco/webhook-handler
+    newTag: sha-0000000
+  - name: ghcr.io/wco/wco/frontend
+    newTag: sha-0000000

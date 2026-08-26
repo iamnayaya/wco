@@ -1,0 +1,21 @@
+{
+  "name": "@wco/analytics",
+  "version": "1.0.0",
+  "description": "WCO analytics — metric processors and the in-process event bus",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint \"src/**/*.ts\" --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@wco/shared": "1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,67 @@
+# Zero-trust defaults: pods may only talk to same-namespace services and DNS.
+# Egress to the internet (PSP APIs, Meta Graph, LLMs) is explicit per app.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+spec:
+  podSelector: {}
+  ingress:
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webhook-handler-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: webhook-handler
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx # or the ALB controller namespace
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: aws-load-balancer-controller
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes: [Egress]
+  egress:
+    - to: # in-cluster dependencies
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: [postgres, redis, rabbitmq] }
+    - to: # WhatsApp + PSP APIs
+        ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+    - to: # DNS
+        namespaceSelector: {}
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns

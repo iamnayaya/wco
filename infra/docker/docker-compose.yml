@@ -1,0 +1,213 @@
+# WCO Local Development Stack
+# Usage: docker compose -f infra/docker/docker-compose.yml up -d
+
+version: "3.9"
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Databases
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: wco-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wco_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wco_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: wco-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *default-logging
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: wco-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    logging: *default-logging
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8-alpine
+    container_name: wco-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: wco_analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # Native
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    logging: *default-logging
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    container_name: wco-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Application Services (built from source)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.backend
+      target: development
+    container_name: wco-backend
+    command: npm run dev --workspace=apps/backend
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/wco_dev
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PORT: 4000
+    ports:
+      - "4000:4000"
+    volumes:
+      - ../../apps/backend:/app/apps/backend
+      - ../../packages:/app/packages
+      - /app/node_modules
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    logging: *default-logging
+
+  ai-engine:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.ai-engine
+      target: development
+    container_name: wco-ai-engine
+    command: npm run dev --workspace=apps/ai-engine
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/wco_dev
+      REDIS_URL: redis://redis:6379
+      PORT: 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - ../../apps/ai-engine:/app/apps/ai-engine
+      - ../../packages:/app/packages
+      - /app/node_modules
+    depends_on:
+      backend: { condition: service_started }
+    logging: *default-logging
+
+  webhook-handler:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.backend
+      target: development
+    container_name: wco-webhook-handler
+    command: npm run dev --workspace=apps/webhook-handler
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/wco_dev
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PORT: 4002
+    ports:
+      - "4002:4002"
+    volumes:
+      - ../../apps/webhook-handler:/app/apps/webhook-handler
+      - ../../packages:/app/packages
+      - /app/node_modules
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    logging: *default-logging
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.frontend
+      target: development
+    container_name: wco-frontend
+    command: npm run dev --workspace=apps/frontend
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../apps/frontend:/app/apps/frontend
+      - ../../packages:/app/packages
+      - /app/node_modules
+      - /app/apps/frontend/.next
+    depends_on:
+      backend: { condition: service_started }
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  clickhouse_data:
+  es_data:
+
+networks:
+  default:
+    name: wco-network

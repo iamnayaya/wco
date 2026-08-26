@@ -1,0 +1,21 @@
+apiVersion: v2
+name: wco
+description: WhatsApp Commerce OS — full platform chart (backend, webhook-handler, frontend, AI engine)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: WCO Platform Team
+keywords:
+  - whatsapp
+  - commerce
+  - ai
+dependencies:
+  - name: postgresql
+    version: "~13.2"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "~17.11"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

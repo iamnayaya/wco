@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
+    "baseUrl": ".",
+    "paths": {
+      "@wco/shared/*": ["packages/shared/src/*"],
+      "@wco/ui/*": ["packages/ui/src/*"],
+      "@wco/config/*": ["packages/config/src/*"],
+      "@wco/database/*": ["packages/database/src/*"],
+      "@wco/auth/*": ["packages/auth/src/*"],
+      "@wco/payments/*": ["packages/payments/src/*"],
+      "@wco/logistics/*": ["packages/logistics/src/*"],
+      "@wco/analytics/*": ["packages/analytics/src/*"],
+      "@wco/messaging/*": ["packages/messaging/src/*"],
+      "@wco/testing/*": ["packages/testing/src/*"]
+    }
+  },
+  "exclude": ["node_modules", "dist", "build", ".turbo", "**/*.test.ts", "**/*.spec.ts"]
+}

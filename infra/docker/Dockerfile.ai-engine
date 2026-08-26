@@ -1,0 +1,57 @@
+# =============================================================================
+# WCO AI Engine — Node.js service with Claude/OpenAI integrations
+# =============================================================================
+
+FROM node:20-alpine AS base
+RUN apk add --no-cache libc6-compat tini
+WORKDIR /app
+
+# ---- Dependencies ------------------------------------------------------------
+FROM base AS deps
+COPY package.json package-lock.json ./
+COPY apps/ai-engine/package.json apps/ai-engine/
+COPY packages/shared/package.json packages/shared/
+COPY packages/config/package.json packages/config/
+COPY packages/database/package.json packages/database/
+COPY packages/tsconfig/package.json packages/tsconfig/
+RUN npm ci --ignore-scripts
+
+# ---- Build --------------------------------------------------------------------
+FROM base AS build
+COPY --from=deps /app/node_modules ./node_modules
+COPY tsconfig.json turbo.json ./
+COPY packages/ ./packages/
+COPY apps/ai-engine/ ./apps/ai-engine/
+ENV NODE_ENV=production
+RUN npx turbo run build --filter=ai-engine
+
+# ---- Development target ---------------------------------------------------------
+FROM base AS development
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+ENV NODE_ENV=development
+EXPOSE 5000
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["npx", "turbo", "run", "dev", "--filter=ai-engine"]
+
+# ---- Production target -----------------------------------------------------------
+FROM node:20-alpine AS production
+RUN apk add --no-cache tini curl
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
+WORKDIR /app
+
+ENV NODE_ENV=production \
+    PORT=5000
+
+COPY --from=build --chown=appuser:appgroup /app/apps/ai-engine/dist ./dist
+COPY --from=build --chown=appuser:appgroup /app/apps/ai-engine/src/prompts ./prompts
+COPY --from=build --chown=appuser:appgroup /app/node_modules ./node_modules
+
+USER 10001
+EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD curl -fsS http://localhost:5000/health || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "dist/main.js"]

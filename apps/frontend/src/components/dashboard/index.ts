@@ -1,0 +1,9 @@
+export { WelcomeSection } from './welcome-section';
+export { MetricsCards } from './metrics-cards';
+export { SalesChart } from './sales-chart';
+export { RecentOrders } from './recent-orders';
+export { TopProducts } from './top-products';
+export { RecentMessages } from './recent-messages';
+export { TasksReminders } from './tasks-reminders';
+export { AIInsights } from './ai-insights';
+export { QuickActions } from './quick-actions';

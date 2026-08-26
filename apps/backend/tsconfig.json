@@ -1,0 +1,11 @@
+{
+  "extends": "@wco/tsconfig/node-service",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "noEmit": true,
+    "types": ["node", "jest"],
+    "strictPropertyInitialization": false
+  },
+  "include": ["src/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}

@@ -1,0 +1,6 @@
+environment = "dev"
+region      = "eu-west-1"
+
+db_password       = "placeholder-use-secrets-manager"
+rabbitmq_password = "placeholder-use-secrets-manager"
+private_subnet_ids = ["subnet-aaa", "subnet-bbb"]

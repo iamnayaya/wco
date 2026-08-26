@@ -1,0 +1,30 @@
+# Staging: prod-shaped, smaller. Load tests run here before every release.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: wco-staging
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: backend
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: webhook-handler
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+
+configMapGenerator:
+  - name: backend-config
+    literals:
+      - NODE_ENV=production
+      - LOG_LEVEL=info
+      - CORS_ORIGIN=https://staging.wco.africa

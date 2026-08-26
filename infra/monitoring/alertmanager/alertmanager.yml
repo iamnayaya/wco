@@ -1,0 +1,30 @@
+# Alertmanager routing — page humans only for critical; everything else to Slack.
+route:
+  receiver: slack-warnings
+  group_by: [alertname, service]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: pagerduty-critical
+      continue: false
+
+receivers:
+  - name: pagerduty-critical
+    pagerduty_configs:
+      - service_key_file: /etc/alertmanager/secrets/pagerduty-key
+        send_resolved: true
+    slack_configs:
+      - api_url_file: /etc/alertmanager/secrets/slack-webhook
+        channel: "#wco-incidents"
+        title: '[{{ .Status }}] {{ .CommonLabels.alertname }}'
+        text: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"
+
+  - name: slack-warnings
+    slack_configs:
+      - api_url_file: /etc/alertmanager/secrets/slack-webhook
+        channel: "#wco-alerts"
+        title: '{{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})'
+        text: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "$comment": "Shared TypeScript configuration presets. Apps extend the preset matching their runtime.",
+  "name": "@wco/tsconfig",
+  "version": "1.0.0",
+  "private": true,
+  "files": ["src/*.json"],
+  "exports": {
+    "./base": "./src/base.json",
+    "./base.json": "./src/base.json",
+    "./nextjs": "./src/nextjs.json",
+    "./nextjs.json": "./src/nextjs.json",
+    "./node-service": "./src/node-service.json",
+    "./node-service.json": "./src/node-service.json",
+    "./react-native": "./src/react-native.json",
+    "./react-native.json": "./src/react-native.json",
+    "./*": "./src/*"
+  }
+}

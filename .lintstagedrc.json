@@ -1,0 +1,6 @@
+{
+  "*.{ts,tsx,js,jsx}": ["eslint --fix --max-warnings 0", "prettier --write"],
+  "*.{json,yml,yaml,md}": ["prettier --write"],
+  "*{.prisma,.graphql}": ["prettier --write"],
+  "package-lock.json": ["npm install --package-lock-only"]
+}

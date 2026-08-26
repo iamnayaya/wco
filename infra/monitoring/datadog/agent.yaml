@@ -1,0 +1,29 @@
+# Datadog — alternative/complement to the Prometheus stack.
+# Deployed as DaemonSet; APM + log collection for all Node services.
+
+apiVersion: datadoghq.com/v2alpha1
+kind: DatadogAgent
+metadata:
+  name: wco-datadog
+spec:
+  global:
+    site: datadoghq.eu
+    tags:
+      - env:prod
+      - service:wco
+  credentials:
+    apiSecret:
+      secretName: datadog-secret
+      keyName: api-key
+  features:
+    apm:
+      enabled: true
+      hostPortConfig:
+        enabled: true
+    logCollection:
+      enabled: true
+      containerCollectAll: true
+    liveProcessCollection:
+      enabled: true
+    orchestratorExplorer:
+      enabled: true

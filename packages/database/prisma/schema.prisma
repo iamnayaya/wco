@@ -1,0 +1,2302 @@
+// =============================================================================
+// WCO â€” WhatsApp Commerce OS Â· PostgreSQL Domain Model
+// =============================================================================
+// Conventions
+//  - Multi-tenant: every business table carries storeId (or merchantId at the
+//    merchant level). All queries MUST scope by tenant â€” enforced in the
+//    repository layer + TenantContext guard, and mirrored by composite indexes.
+//    Defense-in-depth: RLS policies live in migration
+//    20260201000100_security_rls_functions.
+//  - Money: Decimal(14,2) with explicit currency. Never floats.
+//  - IDs: cuid2 strings generated client-side; timestamps UTC-only (roles are
+//    pinned to UTC timezone at role level).
+//  - Soft deletes only where audit history matters (products, variants);
+//    everything else is hard-deleted per NDPR/GDPR erasure requests via the
+//    data-export service.
+//  - High-volume tables (messages, analytics_events, audit_logs) convert to
+//    monthly RANGE partitions / Timescale hypertables in PRODUCTION ONLY via
+//    infra/db/postgres/post-migrate.sql. Dev keeps vanilla tables so Prisma
+//    diffs stay clean.
+//  - `conversations` is exposed to SQL/BI consumers as view `message_threads`.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Identity & Tenancy
+// -----------------------------------------------------------------------------
+
+/// Root of tenancy. One merchant owns many stores (multi-store support).
+model Merchant {
+  id            String        @id @default(cuid())
+  companyName   String
+  email         String        @unique
+  phone         String?
+  country       String        @default("NG")
+  plan          PlanTier      @default(FREE)
+  planExpiresAt DateTime?
+  settings      Json          @default("{}")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  users          User[]
+  stores         Store[]
+  tokens         ApiToken[]
+  paymentMethods PaymentMethod[]
+  subscriptions  Subscription[]
+  whatsappConnections  WhatsAppConnection[]
+  merchantDeliveryProviders MerchantDeliveryProvider[]
+  @@map("merchants")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  merchantId   String
+  email        String
+  phone        String? // login identifier alongside email; E.164-ish, normalized on write
+  fullName     String
+  passwordHash String?
+  role         UserRole  @default(OWNER)
+  isActive     Boolean   @default(true)
+  status       UserStatus @default(ACTIVE) // lifecycle: ACTIVE | SUSPENDED | DELETED
+  suspendedAt  DateTime?
+  suspensionReason String?
+  avatarUrl    String?
+  settings     Json      @default("{}") // per-user prefs (notification channels, UI)
+  lastLoginAt  DateTime?
+
+  // Verification + lifecycle security state
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+  lockedUntil     DateTime? // account lockout (brute-force defense)
+  failedLogins    Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  refreshTokens    RefreshToken[]
+  conversations    Conversation[]    @relation("AssignedAgent")
+  passwordResets   PasswordReset[]
+  emailVerifs      EmailVerification[]
+  phoneVerifs      PhoneVerification[]
+  twoFactor        TwoFactorSecret?
+  oauthAccounts    OAuthAccount[]
+  sellerProfile    SellerProfile?
+  adminProfile     AdminProfile?
+  authoredNotes    CustomerNote[]
+
+  @@unique([merchantId, email])
+  @@index([merchantId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  ip         String?
+  userAgent  String?
+  lastUsedAt DateTime? // touched on every successful rotation
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// Machine-to-machine credentials scoped to a single store (public API).
+model ApiToken {
+  id         String    @id @default(cuid())
+  merchantId String
+  name       String
+  prefix     String
+  tokenHash  String    @unique
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("api_tokens")
+}
+
+// -----------------------------------------------------------------------------
+// Authentication: verification, reset, 2FA, social login
+// -----------------------------------------------------------------------------
+
+/// One-time password-reset credentials. Hashed at rest; a consumed token can
+/// never be replayed (consumedAt set inside the same transaction that rotates
+/// all of the user's refresh tokens).
+model PasswordReset {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_resets")
+}
+
+/// One-time email-verification tokens (hashed). Resending invalidates prior
+/// outstanding tokens for the same user.
+model EmailVerification {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verifications")
+}
+
+/// One-time SMS codes (hashed, max 5 attempts per code). Delivery goes through
+/// the notification pipeline; only the digest is persisted.
+model PhoneVerification {
+  id         String    @id @default(cuid())
+  userId     String
+  codeHash   String    @unique
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("phone_verifications")
+}
+
+/// TOTP enrollment per user (RFC 6238). The shared secret is stored encrypted
+/// at rest with the application key (AUTH_SECRET); backup codes are stored as
+/// bcrypt hashes and burn on first use.
+model TwoFactorSecret {
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  secretEnc      String // AES-256-GCM ciphertext, base64url
+  confirmedAt    DateTime? // set when the first valid TOTP proves enrollment
+  backupCodes    Json      @default("[]") // string[] of bcrypt hashes
+  lastVerifiedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("two_factor_secrets")
+}
+
+/// Social identity link (Google / Facebook / Apple). One account per provider.
+/// Users may sign in via OAuth without ever having a local password.
+model OAuthAccount {
+  id                 String   @id @default(cuid())
+  userId             String
+  provider           String // "google" | "facebook" | "apple"
+  providerAccountId  String
+  createdAt          DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+// -----------------------------------------------------------------------------
+/// Seller-side business profile (1:1 with the OWNER user). Keeps commerce
+/// metadata out of the auth-centric User row so identity stays lean.
+model SellerProfile {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  businessName     String
+  businessCategory String?
+  bio              String?
+  city             String?
+  state            String?
+  country          String   @default("NG")
+  address          String?
+  logoUrl          String?
+  yearsInBusiness  Int?
+  monthlyRevenueBand String? // "<50k" | "50k-250k" | "250k-1m" | ">1m"
+  socials          Json     @default("{}") // {instagram, tiktok, ...}
+  onboardingStep   Int      @default(0)
+  onboardingCompletedAt DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([businessName])
+  @@map("seller_profiles")
+}
+
+/// Platform-staff profile (1:1). Presence of this row is what makes a User a
+/// platform admin - the ADMIN role alone is also used inside merchant teams.
+model AdminProfile {
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  title      String?
+  department String?
+  permissions Json    @default("[]") // string[] capability overrides; [] = defaults
+  lastActionAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("admin_profiles")
+}
+
+/// One WhatsApp Business connection per store (Meta Cloud API session).
+model WhatsAppConnection {
+  id            String                   @id @default(cuid())
+  merchantId    String
+  storeId       String?
+  phone         String // E.164 display number
+  phoneNumberId String?                  // Meta phone_number_id
+  wabaId        String?                  // Meta WABA id
+  status        WhatsAppConnectionStatus @default(DISCONNECTED)
+  qrSessionRef  String?                  // ephemeral pairing-session handle
+  lastError     String?
+  connectedAt   DateTime?
+  disconnectedAt DateTime?
+  healthCheckedAt DateTime?
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([phoneNumberId])
+  @@index([merchantId])
+  @@map("whatsapp_connections")
+}
+
+/// Per-merchant link to a platform logistics provider + encrypted creds.
+model MerchantDeliveryProvider {
+  id           String   @id @default(cuid())
+  merchantId   String
+  providerCode String   // DeliveryProvider.code (GIG | KWIK | SENDY | ...)
+  accountRef   String?  // merchant's account id at the carrier
+  credentialsEnc Bytes? // AES-256-GCM sealed app-layer
+  isDefault    Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  meta         Json     @default("{}")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, providerCode])
+  @@index([merchantId])
+  @@map("merchant_delivery_providers")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum WhatsAppConnectionStatus {
+  DISCONNECTED
+  CONNECTING
+  CONNECTED
+  ERROR
+}
+
+// Catalog
+// -----------------------------------------------------------------------------
+
+model Store {
+  id             String      @id @default(cuid())
+  merchantId     String
+  name           String
+  description    String?
+  slug           String      @unique
+  whatsappNumber String?     @unique
+  whatsappNameId String?     // Meta phone_number_id for Cloud API routing
+  currency       Currency    @default(NGN)
+  timezone       String      @default("Africa/Lagos")
+  address        String?
+  city           String?
+  country        String      @default("NG")
+  status         StoreStatus @default(ACTIVE)
+  settings       Json        @default("{}")
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  merchant      Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  products      Product[]
+  categories    Category[]
+  customers     Customer[]
+  orders        Order[]
+  payments       Payment[]
+  deliveries     Delivery[]
+  conversations  Conversation[]
+  aiConfiguration AiConfiguration?
+  aiTemplates    AiResponseTemplate[]
+  aiIntents      AiIntent[]
+  campaigns     Campaign[]
+  automations   AutomationRule[]
+  suggestions   PriceSuggestion[]
+  metrics       DailyStoreMetric[]
+  events        AnalyticsEvent[]
+  auditLogs     AuditLog[]
+  webhookSubs   WebhookSubscription[]
+  customerTags      CustomerTag[]
+  customerSegments  CustomerSegment[]
+  productTags   ProductTag[]
+  deliveryAddresses DeliveryAddress[]
+  deliveryZones  DeliveryZone[]
+  deliveryClaims DeliveryClaim[]
+  analyticsReports  AnalyticsReport[]
+  analyticsDashboards AnalyticsDashboard[]
+  analyticsInsights  AnalyticsInsight[]
+  aiModels           AIModel[]
+  aiPrompts          AIPrompt[]
+  aiResponses        AIResponse[]
+  aiEmbeddings       AIEmbedding[]
+  aiContexts         AIConversationContext[]
+  aiFeedbacks        AIFeedback[]
+  aiConfidenceScores AIConfidenceScore[]
+
+  @@index([merchantId])
+  @@map("stores")
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  storeId     String
+  name        String
+  description String?
+  sortOrder   Int      @default(0)
+
+  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([storeId, name])
+  @@map("categories")
+}
+
+model Product {
+  id                String        @id @default(cuid())
+  storeId           String
+  categoryId        String?
+  sku               String
+  name              String
+  description       String?       @db.Text
+  price             Decimal       @db.Decimal(14, 2)
+  compareAtPrice    Decimal?      @db.Decimal(14, 2)
+  costPrice         Decimal?      @db.Decimal(14, 2)
+  stockQuantity     Int           @default(0)
+  lowStockThreshold Int           @default(5)
+  trackStock        Boolean       @default(true)
+  images            String[]
+  status            ProductStatus @default(ACTIVE)
+  attributes        Json          @default("{}")
+  waSyncedAt        DateTime?     // last successful WhatsApp catalog push
+  waSyncError       String?
+  deletedAt         DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  store         Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  category      Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  variants      ProductVariant[]
+  imageAssets   ProductImage[]
+  discounts     ProductDiscount[]
+  tagLinks      ProductTagOnProduct[]
+  ledgerEntries InventoryLedger[]
+  orderItems    OrderItem[]
+  forecasts     DemandForecast[]
+  suggestions   PriceSuggestion[]
+
+  @@unique([storeId, sku])
+  @@index([storeId, status])
+  @@index([storeId, name])
+  @@map("products")
+}
+
+/// Size / color / bundle variations. price NULL â‡’ inherits parent product
+/// price (single source of truth for simple SKUs). Stock is per-variant when
+/// trackStock=true; the parent product's stockQuantity then mirrors the SUM
+/// maintained by application code (inventory service) to keep list views fast.
+model ProductVariant {
+  id                String        @id @default(cuid())
+  productId         String
+  sku               String
+  name              String // "50kg" | "Red Â· XL" â€” human label shown in chat
+  price             Decimal?      @db.Decimal(14, 2) // NULL â†’ inherit product.price
+  costPrice         Decimal?      @db.Decimal(14, 2)
+  stockQuantity     Int           @default(0)
+  lowStockThreshold Int           @default(5)
+  trackStock        Boolean       @default(true)
+  attributes        Json          @default("{}") // {"size":"XL","color":"Red"}
+  imageUrl          String?
+  status            ProductStatus @default(ACTIVE)
+  deletedAt         DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  product Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  items   OrderItem[]
+  ledger  InventoryLedger[]
+
+  @@unique([productId, sku])
+  @@index([productId, status])
+  @@map("product_variants")
+}
+
+// -----------------------------------------------------------------------------
+// Product catalog v2 - media, discounts, tags, inventory ledger
+// -----------------------------------------------------------------------------
+
+/// Gallery images managed as first-class rows (ordering + primary flag).
+model ProductImage {
+  id        String   @id @default(cuid())
+  productId String
+  key       String // S3 object key
+  url       String
+  altText   String?
+  position  Int      @default(0)
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+  @@map("product_images")
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+/// Per-product promo codes. Store-scoped uniqueness so codes are shareable
+/// across a merchant's stores without collisions.
+model ProductDiscount {
+  id        String       @id @default(cuid())
+  storeId   String
+  productId String
+  code      String // normalized UPPERCASE
+  type      DiscountType
+  value     Decimal      @db.Decimal(10, 2)
+  label     String?
+  active    Boolean      @default(true)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, code])
+  @@index([productId, active])
+  @@map("product_discounts")
+}
+
+model ProductTag {
+  id        String   @id @default(cuid())
+  storeId   String
+  name      String
+  color     String?
+  createdAt DateTime @default(now())
+
+  store Store                 @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  links ProductTagOnProduct[]
+
+  @@unique([storeId, name])
+  @@map("product_tags")
+}
+
+/// Explicit m2m so tag renames propagate and deletes cascade cleanly.
+model ProductTagOnProduct {
+  productId  String
+  tagId      String
+  assignedAt DateTime @default(now())
+
+  product Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tag     ProductTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([productId, tagId])
+  @@map("product_tag_on_product")
+}
+
+enum StockMovementReason {
+  RESTOCK
+  SALE
+  MANUAL_CORRECTION
+  IMPORT
+  DAMAGE
+  RESERVE_RELEASE
+}
+
+/// Append-only stock movements. Current quantities stay denormalized on
+/// product/variant rows for fast reads; this ledger is the audit truth.
+model InventoryLedger {
+  id                String             @id @default(cuid())
+  storeId           String
+  productId         String
+  variantId         String?
+  delta             Int
+  resultingQuantity Int
+  reason            StockMovementReason @default(MANUAL_CORRECTION)
+  note              String?
+  actorId           String?
+  createdAt         DateTime           @default(now())
+
+  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@index([productId, createdAt])
+  @@index([storeId, createdAt])
+  @@map("product_inventory")
+}
+
+// -----------------------------------------------------------------------------
+// Customers & Orders
+// -----------------------------------------------------------------------------
+
+model Customer {
+  id               String    @id @default(cuid())
+  storeId          String
+  waPhone          String    // E.164 normalized (+2348012345678)
+  name             String?
+  email            String?
+  tags             String[]  @default([])
+  segment          String?   // VIP / REPEAT / NEW / CHURN_RISK â€” computed by AI engine
+  sentiment        Sentiment?
+  totalSpent       Decimal   @default(0) @db.Decimal(14, 2)
+  ordersCount      Int       @default(0)
+  lastOrderAt      DateTime?
+  lastSeenAt       DateTime?
+  marketingOptIn   Boolean   @default(false)
+  notes            String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  store         Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  orders        Order[]
+  conversations Conversation[]
+  campaignMsgs  CampaignMessage[]
+  noteRows          CustomerNote[]
+  segmentMemberships CustomerSegmentMember[]
+
+  @@unique([storeId, waPhone])
+  @@index([storeId, totalSpent])
+  @@index([storeId, lastOrderAt])
+  @@map("customers")
+}
+
+/// Reusable label per store ("VIP", "Wholesale"). `customers.tags` stays the
+/// denormalized fast path for filters - tag rows add color/metadata + audit.
+model CustomerTag {
+  id        String   @id @default(cuid())
+  storeId   String
+  name      String
+  color     String? // hex chip color for the console UI
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, name])
+  @@index([storeId])
+  @@map("customer_tags")
+}
+
+/// Structured seller notes (the freeform customers.notes column predates this
+/// and remains for quick capture). Newest-first timelines in the CRM pane.
+model CustomerNote {
+  id         String   @id @default(cuid())
+  customerId String
+  authorId   String? // team member who wrote it
+  body       String   @db.Text
+  pinned     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  author   User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@map("customer_notes")
+}
+
+/// Named audience bucket. `rule` is a declarative matcher evaluated by the
+/// segmentation engine; manual segments use an empty rule and explicit
+/// memberships. System segments are recreated idempotently by auto-segment.
+model CustomerSegment {
+  id             String    @id @default(cuid())
+  storeId        String
+  name           String
+  description    String?
+  rule           Json      @default("{}")
+  isSystem       Boolean   @default(false)
+  lastComputedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  store    Store                    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  members  CustomerSegmentMember[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+  @@map("customer_segments")
+}
+
+/// Explicit membership join. AI runs diff against rules; manual adds bypass
+/// rule evaluation until the next recompute of system segments.
+model CustomerSegmentMember {
+  id         String   @id @default(cuid())
+  segmentId  String
+  customerId String
+  addedBy    String   @default("manual") // "ai" | userId
+  createdAt  DateTime @default(now())
+
+  segment  CustomerSegment @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+  customer Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([segmentId, customerId])
+  @@index([customerId])
+  @@map("customer_segment_members")
+}
+
+model Order {
+  id                String      @id @default(cuid())
+  storeId           String
+  customerId        String
+  orderNumber       String      @unique // human-readable: WC-7F3K9Q
+  status            OrderStatus @default(PENDING_PAYMENT)
+  channel           OrderChannel @default(WHATSAPP)
+  subtotal          Decimal     @db.Decimal(14, 2)
+  discount          Decimal     @default(0) @db.Decimal(14, 2)
+  deliveryFee       Decimal     @default(0) @db.Decimal(14, 2)
+  total             Decimal     @db.Decimal(14, 2)
+  currency          Currency    @default(NGN)
+  paymentReference  String?
+  deliveryAddress   String?
+  deliveryCity      String?
+  notes             String?
+  fraudScore        Int? // 0-100 from the AI fraud heuristics; null = never scored
+  paidAt            DateTime?
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+  cancelledAt       DateTime?
+  cancellationReason String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  store     Store       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customer  Customer    @relation(fields: [customerId], references: [id])
+  items     OrderItem[]
+  payment   Payment?
+  delivery  Delivery?
+  statusHistory OrderStatusHistory[]
+  orderNotes    OrderNote[]
+  refunds       OrderRefund[]
+  cancellationRecord OrderCancellation?
+
+  @@index([storeId, status, createdAt])
+  @@index([storeId, customerId, createdAt])
+  @@index([customerId])
+  @@map("orders")
+}
+
+model OrderItem {
+  id          String  @id @default(cuid())
+  orderId     String
+  productId   String
+  variantId   String?
+  productName String // snapshot â€” catalog renames must not rewrite history
+  variantName String?
+  sku         String? // snapshot of product/variant SKU at purchase time
+  quantity    Int
+  unitPrice   Decimal @db.Decimal(14, 2)
+  note        String?
+
+  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([variantId])
+  @@map("order_items")
+}
+
+/// Append-only audit trail of every status move (who/when/why). Never updated,
+/// only inserted - the timeline endpoint reads it straight.
+model OrderStatusHistory {
+  id         String      @id @default(cuid())
+  orderId    String
+  fromStatus OrderStatus
+  toStatus   OrderStatus
+  reason     String?
+  actorId    String? // app-level User.id ref; null = system / API-token actor
+  createdAt  DateTime    @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+/// Merchant-facing context on an order ("customer called, deliver after 5pm").
+model OrderNote {
+  id        String   @id @default(cuid())
+  orderId   String
+  body      String
+  pinned    Boolean  @default(false)
+  authorId  String? // app-level User.id ref; null = API-token import
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, pinned, createdAt])
+  @@map("order_notes")
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+enum WebhookEventStatus {
+  PENDING
+  PROCESSED
+  FAILED
+  DUPLICATE
+}
+
+/// Money-back record. One order may hold several partial refunds; the order
+/// flips to REFUNDED only when succeeded refunds cover the payable amount.
+model OrderRefund {
+  id                String       @id @default(cuid())
+  storeId           String
+  orderId           String
+  amount            Decimal      @db.Decimal(14, 2)
+  reason            String?
+  status            RefundStatus @default(PENDING)
+  providerReference String? // PSP refund transaction id once processed
+  processedAt       DateTime?
+  actorId           String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, status])
+  @@index([orderId])
+  @@map("order_refunds")
+}
+
+/// Terminal-state record for cancelled orders (one per order). `restocked`
+/// records whether reserved inventory was returned to the shelves.
+model OrderCancellation {
+  id        String   @id @default(cuid())
+  storeId   String
+  orderId   String   @unique
+  reason    String
+  restocked Boolean  @default(false)
+  actorId   String?
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, createdAt])
+  @@map("order_cancellations")
+}
+
+// -----------------------------------------------------------------------------
+// Payments & Logistics
+// -----------------------------------------------------------------------------
+
+model Payment {
+  id                String          @id @default(cuid())
+  storeId           String
+  orderId           String?         @unique
+  provider          PaymentProvider
+  providerReference String          @unique // PSP transaction id
+  amount            Decimal         @db.Decimal(14, 2)
+  fee               Decimal         @default(0) @db.Decimal(14, 2)
+  currency          Currency        @default(NGN)
+  status            PaymentStatus   @default(INITIALIZED)
+  checkoutUrl       String?
+  failureReason     String?
+  meta              Json            @default("{}")
+  initializedAt     DateTime        @default(now())
+  paidAt            DateTime?
+  refundedAt        DateTime?
+
+  store    Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  order    Order? @relation(fields: [orderId], references: [id])
+
+  transactions PaymentTransaction[]
+  webhooks     PaymentWebhook[]
+  commissions  Commission[]
+  fees         Fee[]
+
+  @@index([storeId, status])
+  @@index([providerReference])
+  @@map("payments")
+}
+
+/// Append-only audit log of every PSP state transition. Each row is an
+/// immutable事实 — never updated, never deleted. Used for reconciliation,
+/// dispute resolution, and debugging payment flows.
+model PaymentTransaction {
+  id                String             @id @default(cuid())
+  paymentId         String
+  providerReference String
+  status            PaymentStatus
+  amount            Decimal            @db.Decimal(14, 2)
+  fee               Decimal            @default(0) @db.Decimal(14, 2)
+  currency          Currency           @default(NGN)
+  gatewayResponse   String?            @db.Text
+  metadata          Json               @default("{}")
+  createdAt         DateTime           @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, createdAt])
+  @@index([providerReference])
+  @@map("payment_transactions")
+}
+
+/// Inbound webhook event log — every raw PSP callback is stored verbatim for
+/// audit + replay. Deduplication uses the unique (provider, eventId) pair.
+model PaymentWebhook {
+  id            String            @id @default(cuid())
+  provider      PaymentProvider
+  eventId       String?           // PSP-unique event id (for dedupe)
+  eventType     String
+  rawPayload    Json
+  signature     String?
+  status        WebhookEventStatus @default(PENDING)
+  processedAt   DateTime?
+  errorReason   String?
+  createdAt     DateTime          @default(now())
+
+  @@unique([provider, eventId])
+  @@index([provider, status])
+  @@index([createdAt])
+  @@map("payment_webhooks")
+}
+
+/// Platform-level registry of logistics partners. Holds integration config +
+/// rate card metadata; per-delivery carrier choice is snapshotted onto the
+/// delivery row so history stays stable if a provider is renamed/deactivated.
+model DeliveryProvider {
+  id                   String   @id @default(cuid())
+  code                 String   @unique // GIG | KWIK | SENDY | ...
+  name                 String
+  countries            String[] @default(["NG"])
+  cities               String[] @default([]) // empty = nationwide
+  baseFee              Decimal  @db.Decimal(14, 2)
+  perKmFee             Decimal  @default(0) @db.Decimal(14, 2)
+  avgEtaMinutes        Int?
+  credentialsEncrypted Bytes?   // AES-256-GCM envelope, app-layer encrypted
+  webhookSecretHash    String?
+  isActive             Boolean  @default(true)
+  meta                 Json     @default("{}")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  deliveries Delivery[]
+  rates      DeliveryRate[]
+
+  @@map("delivery_providers")
+}
+
+/// Fulfilment of one order. `carrier` is a denormalized snapshot of
+/// deliveryProvider.code for display/history; providerId is the live FK.
+model Delivery {
+  id                String           @id @default(cuid())
+  storeId           String
+  orderId           String           @unique
+  deliveryProviderId String?
+  carrier           LogisticsCarrier @default(MANUAL)
+  trackingCode      String?
+  status            DeliveryStatus   @default(QUOTED)
+  pickupAddress     String?
+  pickupLat         Float?
+  pickupLng         Float?
+  dropoffAddress    String?
+  dropoffLat        Float?
+  dropoffLng        Float?
+  recipientName     String?
+  recipientPhone    String?
+  packageDescription String?
+  packageWeightKg   Float?
+  packageLengthCm   Float?
+  packageWidthCm    Float?
+  packageHeightCm   Float?
+  fee               Decimal?         @db.Decimal(14, 2)
+  currency          String?          @default("NGN")
+  insuranceAmount   Decimal?         @db.Decimal(14, 2)
+  codAmount         Decimal?         @db.Decimal(14, 2) // cash-on-delivery to collect
+  etaMinutes        Int?
+  distanceKm        Float?
+  quotedAt          DateTime?
+  bookedAt          DateTime?
+  pickedUpAt        DateTime?
+  inTransitAt       DateTime?
+  deliveredAt       DateTime?
+  failedAt          DateTime?
+  cancelledAt       DateTime?
+  failureReason     String?
+  cancelReason      String?
+  proofUrl          String? // POD photo/signature (S3 key)
+  rating            Int?             // 1-5 delivery rating
+  reviewComment     String?
+  meta              Json             @default("{}")
+
+  store    Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  order    Order            @relation(fields: [orderId], references: [id])
+  provider DeliveryProvider? @relation(fields: [deliveryProviderId], references: [id])
+
+  trackingEvents DeliveryTracking[]
+  claims         DeliveryClaim[]
+
+  @@index([storeId, status])
+  @@index([trackingCode])
+  @@index([deliveryProviderId, status])
+  @@index([storeId, createdAt])
+  @@map("deliveries")
+}
+
+/// Append-only tracking event log for a delivery.
+model DeliveryTracking {
+  id          String         @id @default(cuid())
+  deliveryId  String
+  status      DeliveryStatus
+  location    String?
+  note        String?
+  source      String         @default("system") // "system" | "webhook" | "polling" | "manual"
+  occurredAt  DateTime       @default(now())
+  meta        Json           @default("{}")
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryId, occurredAt])
+  @@map("delivery_tracking")
+}
+
+/// Delivery claims (lost, damaged, delayed, wrong item).
+model DeliveryClaim {
+  id           String              @id @default(cuid())
+  deliveryId   String
+  storeId      String
+  type         DeliveryClaimType
+  status       DeliveryClaimStatus @default(PENDING)
+  description  String?
+  evidenceUrls String[]            @default([])
+  resolution   String?
+  payoutAmount Decimal?            @db.Decimal(14, 2)
+  resolvedAt   DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, status])
+  @@index([deliveryId])
+  @@map("delivery_claims")
+}
+
+/// Saved delivery addresses for a store (warehouses, recurring customers).
+model DeliveryAddress {
+  id        String   @id @default(cuid())
+  storeId   String
+  label     String   // "Warehouse", "Customer HQ", etc.
+  contactName  String?
+  contactPhone String?
+  addressLine1 String
+  addressLine2 String?
+  city       String
+  state      String?
+  country    String   @default("NG")
+  postalCode String?
+  latitude   Float?
+  longitude  Float?
+  isDefault  Boolean  @default(false)
+  meta       Json     @default("{}")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([storeId])
+  @@index([storeId, isDefault])
+  @@map("delivery_addresses")
+}
+
+/// Rate card per delivery provider (used for cost calculation).
+model DeliveryRate {
+  id             String   @id @default(cuid())
+  deliveryProviderId String
+  name           String   // "Standard", "Express", "Same Day"
+  baseFee        Decimal  @db.Decimal(14, 2)
+  perKmFee       Decimal  @default(0) @db.Decimal(14, 2)
+  perKgFee       Decimal  @default(0) @db.Decimal(14, 2)
+  minimumFee     Decimal  @default(0) @db.Decimal(14, 2)
+  maximumFee     Decimal? @db.Decimal(14, 2)
+  freeThresholdKm  Float?  // free delivery above this distance
+  avgEtaMinutes  Int?
+  maxWeightKg    Float?
+  maxDimensionsCm Float? // max L+W+H
+  isActive       Boolean  @default(true)
+  meta           Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  provider DeliveryProvider @relation(fields: [deliveryProviderId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryProviderId, isActive])
+  @@map("delivery_rates")
+}
+
+/// Delivery zones for a store (polygons defining serviceable areas).
+model DeliveryZone {
+  id        String   @id @default(cuid())
+  storeId   String
+  name      String
+  type      DeliveryZoneType @default(CUSTOM)
+  /// GeoJSON polygon coordinates (array of [lng, lat] rings)
+  coordinates Json
+  /// Optional: radius-based zone (simpler alternative to polygon)
+  centerLat Float?
+  centerLng Float?
+  radiusKm  Float?
+  fee       Decimal  @db.Decimal(14, 2) @default(0)
+  etaMinutes Int?
+  isActive  Boolean  @default(true)
+  meta      Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([storeId])
+  @@index([storeId, isActive])
+  @@map("delivery_zones")
+}
+
+// -----------------------------------------------------------------------------
+// Billing â€” payout accounts & subscriptions
+// -----------------------------------------------------------------------------
+
+/// Merchant payout destinations (where settled money lands). Sensitive fields
+/// are encrypted at the application layer with AES-256-GCM; accountNumberHash
+/// is HMAC-SHA256 so we can enforce uniqueness & search without decryption.
+model PaymentMethod {
+  id                 String                   @id @default(cuid())
+  merchantId         String
+  type               PaymentMethodType
+  providerName       String // "GTBank" | "OPay" | "M-Pesa" | "MTN MoMo"
+  accountName        String
+  accountNumberEnc   String // ciphertext â€” never store plaintext
+  accountNumberLast4 String // display-only digits
+  accountNumberHash  String
+  bankCode           String? // NIBSS bank code / momo network code
+  isDefault          Boolean                  @default(false)
+  verificationStatus PayoutVerificationStatus @default(PENDING)
+  verifiedAt         DateTime?
+  meta               Json                     @default("{}")
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, accountNumberHash])
+  @@index([merchantId])
+  @@map("payment_methods")
+}
+
+/// Plan catalog â€” seeded by platform ops, immutable-ish (price changes create
+/// a new row; historical subscriptions keep pointing at the old plan).
+model SubscriptionPlan {
+  id           String   @id @default(cuid())
+  code         String   @unique // FREE | STARTER | GROWTH | SCALE
+  name         String
+  description  String?
+  priceMonthly Decimal  @db.Decimal(10, 2)
+  priceYearly  Decimal  @db.Decimal(10, 2)
+  currency     Currency @default(NGN)
+  trialDays    Int      @default(0)
+  limits       Json     @default("{}") // {ordersPerMonth, aiCredits, stores, users, products}
+  features     String[] @default([])
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@map("subscription_plans")
+}
+
+/// One billing relationship per merchant. A partial unique index in SQL
+/// guarantees at most one ACTIVE/TRIALING subscription per merchant.
+model Subscription {
+  id                 String             @id @default(cuid())
+  merchantId         String
+  planId             String
+  status             SubscriptionStatus @default(TRIALING)
+  billingCycle       BillingCycle       @default(MONTHLY)
+  amount             Decimal            @db.Decimal(10, 2) // locked-in price at signup/renewal
+  currency           Currency           @default(NGN)
+  currentPeriodStart DateTime           @default(now())
+  currentPeriodEnd   DateTime
+  trialEndsAt        DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  cancelledAt        DateTime?
+  providerReference  String? // PSP subscription/customer code (Paystack etc.)
+  meta               Json               @default("{}")
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  merchant Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  plan     SubscriptionPlan @relation(fields: [planId], references: [id])
+
+  subscriptionPayments SubscriptionPayment[]
+
+  @@index([merchantId])
+  @@index([status, currentPeriodEnd]) // renewal cron scan
+  @@index([trialEndsAt]) // trial-expiry reminders
+  @@map("subscriptions")
+}
+
+// -----------------------------------------------------------------------------
+// Messaging (WhatsApp conversations)
+// -----------------------------------------------------------------------------
+
+model Conversation {
+  id             String             @id @default(cuid())
+  storeId        String
+  customerId     String
+  waPhone        String // denormalized for hot-path lookups
+  status         ConversationStatus @default(BOT)
+  botEnabled     Boolean            @default(true)
+  assignedUserId String?
+  unreadCount    Int                @default(0)
+  lastMessageAt  DateTime           @default(now())
+  lastMessagePreview String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  store    Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customer Customer         @relation(fields: [customerId], references: [id])
+  agent    User?            @relation("AssignedAgent", fields: [assignedUserId], references: [id])
+  messages Message[]
+  escalations MessageEscalation[]
+
+  @@unique([storeId, customerId])
+  @@index([storeId, lastMessageAt])
+  @@index([storeId, status])
+  @@map("conversations")
+}
+
+/// Hottest table in the system. Partitioned monthly in production;
+/// >90d rows archived to S3 via analytics rollup job.
+model Message {
+  id             String          @id @default(cuid())
+  conversationId String
+  direction      MessageDirection
+  type           MessageType     @default(TEXT)
+  body           String?         @db.Text
+  mediaUrl       String?
+  templateName   String?
+  waMessageId    String?         @unique // provider id â€” webhook dedupe key
+  status         MessageStatus   @default(QUEUED)
+  sentByBot      Boolean         @default(false)
+  errorReason    String?
+  createdAt      DateTime        @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  attachments  MessageAttachment[]
+
+  @@index([conversationId, createdAt])
+  @@index([status, createdAt])
+  @@map("messages")
+}
+
+// -----------------------------------------------------------------------------
+// Marketing automation
+// -----------------------------------------------------------------------------
+
+model AutomationRule {
+  id           String            @id @default(cuid())
+  storeId      String
+  trigger      AutomationTrigger
+  conditions   Json              @default("{}") // e.g. { minCartValue: 5000 }
+  messageBody  String            @db.Text
+  delayMinutes Int               @default(0)
+  isEnabled    Boolean           @default(true)
+  priority     Int               @default(0)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, trigger, isEnabled])
+  @@map("automation_rules")
+}
+
+model Campaign {
+  id              String         @id @default(cuid())
+  storeId         String
+  type            CampaignType
+  name            String
+  audienceFilter  Json           @default("{}") // e.g. { tags:["VIP"], minOrders: 2 }
+  messageBody     String         @db.Text
+  scheduledFor    DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  status          CampaignStatus @default(DRAFT)
+  statsSent       Int            @default(0)
+  statsDelivered  Int            @default(0)
+  statsReplied    Int            @default(0)
+  createdAt       DateTime       @default(now())
+
+  store    Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  messages CampaignMessage[]
+
+  @@index([storeId, status])
+  @@map("campaigns")
+}
+
+model CampaignMessage {
+  id          String   @id @default(cuid())
+  campaignId  String
+  customerId  String
+  status      String   @default("queued") // queued|sent|delivered|replied|failed
+  messageId   String?
+  errorReason String?
+  sentAt      DateTime?
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([campaignId, status])
+  @@map("campaign_messages")
+}
+
+// -----------------------------------------------------------------------------
+// AI outputs
+// -----------------------------------------------------------------------------
+
+model PriceSuggestion {
+  id             String   @id @default(cuid())
+  storeId        String
+  productId      String
+  currentPrice   Decimal  @db.Decimal(14, 2)
+  suggestedPrice Decimal  @db.Decimal(14, 2)
+  confidence     Decimal  @db.Decimal(3, 2)
+  reason         String
+  factors        Json     @default("{}") // demand/competition/inventory breakdown
+  status         String   @default("PENDING") // PENDING|APPROVED|DISMISSED|EXPIRED
+  expiresAt      DateTime?
+  appliedAt      DateTime?
+  createdAt      DateTime @default(now())
+
+  store   Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, status])
+  @@map("price_suggestions")
+}
+
+model DemandForecast {
+  id             String   @id @default(cuid())
+  storeId        String
+  productId      String
+  forecastDate   DateTime @db.Date
+  predictedDemand Int
+  actualDemand   Int?
+  confidence     Decimal  @db.Decimal(3, 2)
+  modelVersion   String
+  createdAt      DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, forecastDate])
+  @@index([storeId, forecastDate])
+  @@map("demand_forecasts")
+}
+
+// -----------------------------------------------------------------------------
+// AI configuration & templates
+// -----------------------------------------------------------------------------
+
+/// Per-store AI brain settings. One row per store (enforced by @unique) â€”
+/// the auto-responder loads this on every turn and caches it in Redis.
+model AiConfiguration {
+  id                   String   @id @default(cuid())
+  storeId              String   @unique
+  isEnabled            Boolean  @default(true)
+  tone                 AiTone   @default(FRIENDLY)
+  languages            String[] @default(["en", "pcm"]) // ISO codes; pcm = Nigerian Pidgin
+  businessContext      String?  @db.Text // seller-provided FAQ / policies fed to prompts
+  autoReplyEnabled     Boolean  @default(true)
+  workingHours         Json     @default("{}") // {"start":"08:00","end":"20:00","days":[1,2,3,4,5,6]}
+  outOfOfficeBody      String?  @db.Text
+  escalationKeywords   String[] @default([]) // "refund", "complain" â†’ hand off to human
+  primaryModel         String   @default("claude-3-haiku-20240307")
+  fallbackModel        String   @default("gpt-4o-mini")
+  temperature          Decimal  @default(0.7) @db.Decimal(3, 2)
+  maxTokens            Int      @default(512)
+  dailyTokenBudget     Int      @default(200000) // hard stop per store per day (COGS guardrail)
+  semanticCacheEnabled Boolean  @default(true)
+  confidenceThreshold  Decimal  @default(0.60) @db.Decimal(3, 2) // below this the bot hands off
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("ai_configurations")
+}
+
+/// Reusable response templates. storeId NULL â‡’ platform-provided system
+/// template available to every store (seeded defaults). Bodies support
+/// {{mustache}} variables declared in `variables` for validation.
+model AiResponseTemplate {
+  id           String             @id @default(cuid())
+  storeId      String?
+  category     AiTemplateCategory @default(CUSTOM)
+  templateName String
+  body         String             @db.Text
+  variables    String[]           @default([]) // ["customerName","orderNumber"]
+  language     String             @default("en")
+  isActive     Boolean            @default(true)
+  priority     Int                @default(0) // higher wins when multiple match
+  usageCount   Int                @default(0)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, templateName]) // NULL storeId rows are exempt by SQL NULL semantics
+  @@index([category, language, isActive])
+  @@map("ai_responses")
+}
+
+/// Media attached to a message (inbound WhatsApp media or outbound S3 upload).
+model MessageAttachment {
+  id         String   @id @default(cuid())
+  messageId  String
+  fileName   String
+  mimeType   String // image/jpeg | image/png | image/webp | application/pdf | audio/ogg | video/mp4
+  sizeBytes  Int
+  url        String
+  createdAt  DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("message_attachments")
+}
+
+/// Human-handoff records raised by the AI engine (low confidence, complaints)
+/// or by agents. One thread can accumulate many escalations over its life.
+model MessageEscalation {
+  id             String             @id @default(cuid())
+  storeId        String
+  threadId       String
+  messageId      String?
+  reason         EscalationReason
+  status         EscalationStatus   @default(OPEN)
+  notes          String?            @db.Text
+  assignedUserId String?
+  resolvedById   String?
+  resolvedAt     DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  thread Conversation @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, status, createdAt])
+  @@index([threadId])
+  @@map("message_escalations")
+}
+
+/// Store-scoped custom intents. The auto-responder matches these BEFORE the
+/// built-in lexicons so sellers can teach the bot their business ("do you
+/// deliver to Lekki?" -> canned answer) without any ML training.
+model AiIntent {
+  id               String   @id @default(cuid())
+  storeId          String
+  name             String // "DELIVERY_LEKKI", human label shown in UI
+  keywords         String[] @default([])
+  sampleUtterances String[] @default([])
+  cannedResponse   String?  @db.Text
+  priority         Int      @default(0) // higher wins on multi-match
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, name])
+  @@map("ai_intents")
+}
+
+/// Append-only per-turn AI telemetry (intent/entities/confidence/latency).
+/// Drives accuracy dashboards + escalation-rate alerts; partitioned monthly
+/// in production like analytics_events.
+model AiResponseLog {
+  id                String   @id @default(cuid())
+  storeId           String
+  threadId          String
+  inboundMessageId  String?
+  outboundMessageId String?
+  intent            String
+  confidence        Float
+  entities          Json     @default("{}")
+  language          String   @default("en")
+  source            String   @default("heuristic") // heuristic | llm
+  model             String?
+  escalated         Boolean  @default(false)
+  latencyMs         Int      @default(0)
+  createdAt         DateTime @default(now())
+
+  @@index([storeId, createdAt])
+  @@index([threadId])
+  @@map("ai_response_logs")
+}
+
+// -----------------------------------------------------------------------------
+// Analytics & Compliance
+// -----------------------------------------------------------------------------
+
+/// Append-only behavioral event stream. Written by API/webhooks, drained by
+/// analytics workers into DailyStoreMetric rollups + warehouse.
+model AnalyticsEvent {
+  id         BigInt    @id @default(autoincrement())
+  storeId    String
+  customerId String?
+  sessionId  String?
+  type       String // order.created | message.replied | cart.abandoned | ...
+  props      Json      @default("{}")
+  occurredAt DateTime  @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, type, occurredAt])
+  @@index([occurredAt])
+  @@map("analytics_events")
+}
+
+model DailyStoreMetric {
+  id                 String   @id @default(cuid())
+  storeId            String
+  date               DateTime @db.Date
+  revenue            Decimal  @default(0) @db.Decimal(16, 2)
+  ordersCount        Int      @default(0)
+  newCustomers       Int      @default(0)
+  messagesCount      Int      @default(0)
+  aiResolutionRate   Decimal  @default(0) @db.Decimal(5, 4)
+  avgResponseSeconds Decimal  @default(0) @db.Decimal(8, 1)
+  conversionRate     Decimal  @default(0) @db.Decimal(5, 4)
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, date])
+  @@map("daily_store_metrics")
+}
+
+model OutboxEvent {
+  id            String    @id @default(cuid())
+  aggregateType String // order | payment | shipment | conversation
+  aggregateId   String
+  eventType     String // domain event name â€” see @wco/shared events catalog
+  payload       Json
+  processedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([processedAt, createdAt])
+  @@map("outbox_events")
+}
+
+/// Merchant-facing outgoing webhooks: WCO -> merchant systems.
+/// Delivery is HMAC-SHA256 signed; retries with exponential backoff.
+model WebhookSubscription {
+  id        String   @id @default(cuid())
+  storeId   String
+  url       String
+  secret    String // HMAC key for payload signing
+  events    String[] @default([]) // empty = all events
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, isActive])
+  @@map("webhook_subscriptions")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  storeId     String?
+  actorUserId String?
+  actorIp     String?
+  action      String // auth.login | product.update | payout.request ...
+  resource    String
+  resourceId  String?
+  before      Json?
+  after       Json?
+  createdAt   DateTime @default(now())
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: SetNull)
+
+  @@index([storeId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@map("audit_logs")
+}
+
+// -----------------------------------------------------------------------------
+// Subscription billing, commissions & fees
+// -----------------------------------------------------------------------------
+
+/// Append-only billing ledger for subscription payments. One row per charge
+/// attempt (success or failure). Used for dunning, revenue recognition, and
+/// merchant billing history.
+model SubscriptionPayment {
+  id                 String                   @id @default(cuid())
+  subscriptionId     String
+  amount             Decimal                  @db.Decimal(10, 2)
+  currency           Currency                 @default(NGN)
+  status             SubscriptionPaymentStatus @default(PENDING)
+  billingReason      SubscriptionBillingReason @default(RECURRING)
+  providerReference  String?                  // PSP transaction reference
+  failureReason      String?
+  invoiceNumber      String?                  @unique
+  paidAt             DateTime?
+  nextRetryAt        DateTime?
+  meta               Json                     @default("{}")
+  createdAt          DateTime                 @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, createdAt])
+  @@index([status])
+  @@map("subscription_payments")
+}
+
+/// Platform commission recorded per successful payment. Commission is
+/// calculated at payment success time and settled to WCO on a schedule.
+model Commission {
+  id             String           @id @default(cuid())
+  storeId        String
+  paymentId      String
+  rate           Decimal          @db.Decimal(5, 4) // e.g. 0.0200 = 2%
+  amount         Decimal          @db.Decimal(14, 2)
+  currency       Currency         @default(NGN)
+  status         CommissionStatus @default(PENDING)
+  settledAt      DateTime?
+  settlementRef  String?          // batch reference when settled
+  meta           Json             @default("{}")
+  createdAt      DateTime         @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, status])
+  @@index([paymentId])
+  @@index([settledAt])
+  @@map("commissions")
+}
+
+/// Payment processing fee recorded per transaction. Fees cover PSP charges
+/// and are passed through to merchants or absorbed by the platform.
+model Fee {
+  id             String      @id @default(cuid())
+  storeId        String
+  paymentId      String
+  type           FeeType
+  rate           Decimal?    @db.Decimal(5, 4) // percentage rate, null for flat fees
+  flatAmount     Decimal?    @db.Decimal(14, 2) // flat fee, null for percentage fees
+  calculatedAmount Decimal  @db.Decimal(14, 2) // actual computed fee
+  currency       Currency    @default(NGN)
+  status         FeeStatus   @default(PENDING)
+  providerFee    Decimal?    @db.Decimal(14, 2) // actual PSP fee
+  settledAt      DateTime?
+  meta           Json        @default("{}")
+  createdAt      DateTime    @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, type])
+  @@index([paymentId])
+  @@map("fees")
+}
+
+enum SubscriptionPaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  DISPUTED
+}
+
+enum SubscriptionBillingReason {
+  RECURRING
+  TRIAL_CONVERT
+  UPGRADE
+  DOWNGRADE
+  REACTIVATION
+  ONE_TIME
+}
+
+enum CommissionStatus {
+  PENDING
+  SETTLED
+  CANCELLED
+}
+
+enum FeeType {
+  PROCESSING
+  PLATFORM
+  CURRENCY_CONVERSION
+  REFUND
+}
+
+enum FeeStatus {
+  PENDING
+  CHARGED
+  REFUNDED
+  WAIVED
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum UserRole {
+  OWNER
+  ADMIN
+  SUPER_ADMIN
+  AGENT
+  VIEWER
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  GROWTH
+  SCALE
+}
+
+enum StoreStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum ProductStatus {
+  ACTIVE
+  DRAFT
+  OUT_OF_STOCK
+  ARCHIVED
+}
+
+enum Currency {
+  NGN
+  GHS
+  KES
+  ZAR
+  XOF
+  USD
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum OrderChannel {
+  WHATSAPP
+  DASHBOARD
+  PAYMENT_LINK
+}
+
+enum PaymentProvider {
+  PAYSTACK
+  FLUTTERWAVE
+  OPAY
+  BANK_TRANSFER
+  CASH
+}
+
+enum PaymentStatus {
+  INITIALIZED
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  ABANDONED
+}
+
+enum LogisticsCarrier {
+  GIG
+  KWIK
+  SENDY
+  MANUAL
+}
+
+enum DeliveryStatus {
+  QUOTED
+  BOOKED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum DeliveryClaimType {
+  LOST
+  DAMAGED
+  DELAYED
+  WRONG_ITEM
+  PARTIAL
+  OTHER
+}
+
+enum DeliveryClaimStatus {
+  PENDING
+  PROCESSING
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum DeliveryZoneType {
+  CITY
+  STATE
+  COUNTRY
+  RADIUS
+  CUSTOM
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  AUDIO
+  VIDEO
+  DOCUMENT
+  LOCATION
+  TEMPLATE
+  INTERACTIVE
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  RECEIVED
+}
+
+enum ConversationStatus {
+  BOT
+  HANDLED
+  CLOSED
+}
+
+enum EscalationReason {
+  LOW_CONFIDENCE
+  COMPLAINT
+  REFUND_REQUEST
+  PAYMENT_ISSUE
+  CUSTOM_QUOTE
+  HUMAN_REQUESTED
+  NEGATIVE_SENTIMENT
+}
+
+enum EscalationStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  DISMISSED
+}
+
+enum CampaignType {
+  ABANDONED_CART
+  FOLLOW_UP
+  PROMOTION
+  WINBACK
+  REVIEW_REQUEST
+}
+
+// ───────────────────────────── ANALYTICS ─────────────────────────────
+
+enum AnalyticsReportType {
+  SALES
+  CUSTOMERS
+  PRODUCTS
+  MESSAGES
+  PAYMENTS
+  DELIVERIES
+  COMPREHENSIVE
+}
+
+enum AnalyticsReportStatus {
+  PENDING
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
+enum AnalyticsReportFormat {
+  CSV
+  JSON
+  PDF
+}
+
+enum AnalyticsReportFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  ONCE
+}
+
+enum AnalyticsInsightType {
+  TREND
+  ANOMALY
+  OPPORTUNITY
+  RISK
+  RECOMMENDATION
+}
+
+enum AnalyticsInsightSeverity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AnalyticsInsightStatus {
+  ACTIVE
+  DISMISSED
+  ACTED_UPON
+  EXPIRED
+}
+
+enum MetricAggregation {
+  SUM
+  AVG
+  COUNT
+  MIN
+  MAX
+  P50
+  P95
+  P99
+}
+
+enum AnalyticsGranularity {
+  HOURLY
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+model AnalyticsReport {
+  id           String                   @id @default(cuid())
+  storeId      String
+  reportType   AnalyticsReportType
+  status       AnalyticsReportStatus    @default(PENDING)
+  format       AnalyticsReportFormat    @default(JSON)
+  frequency    AnalyticsReportFrequency @default(ONCE)
+  dateFrom     DateTime
+  dateTo       DateTime
+  parameters   Json                     @default("{}")
+  result       Json?
+  fileUrl      String?
+  error        String?
+  scheduledAt  DateTime?
+  generatedAt  DateTime?
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, reportType, createdAt])
+  @@index([storeId, status])
+  @@index([storeId, scheduledAt])
+  @@map("analytics_reports")
+}
+
+model AnalyticsDashboard {
+  id          String   @id @default(cuid())
+  storeId     String
+  name        String
+  description String?
+  isDefault   Boolean  @default(false)
+  layout      Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  store   Store                     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  widgets AnalyticsDashboardWidget[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+  @@map("analytics_dashboards")
+}
+
+model AnalyticsDashboardWidget {
+  id           String   @id @default(cuid())
+  dashboardId  String
+  storeId      String
+  widgetType   String
+  title        String
+  config       Json     @default("{}")
+  position     Json     @default("{}")
+  refreshSecs  Int      @default(300)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  dashboard AnalyticsDashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
+
+  @@index([dashboardId])
+  @@map("analytics_dashboard_widgets")
+}
+
+model AnalyticsInsight {
+  id          String                 @id @default(cuid())
+  storeId     String
+  insightType AnalyticsInsightType
+  severity    AnalyticsInsightSeverity @default(INFO)
+  status      AnalyticsInsightStatus  @default(ACTIVE)
+  title       String
+  body        String
+  data        Json                   @default("{}")
+  actionUrl   String?
+  actionLabel String?
+  expiresAt   DateTime?
+  dismissedAt DateTime?
+  actedAt     DateTime?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, status, createdAt])
+  @@index([storeId, insightType])
+  @@map("analytics_insights")
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  PAUSED
+}
+
+enum AutomationTrigger {
+  ORDER_PAID
+  ORDER_SHIPPED
+  ORDER_DELIVERED
+  CART_ABANDONED
+  NEW_CUSTOMER
+  FOLLOW_UP_DUE
+  KEYWORD
+}
+
+enum Sentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+enum PaymentMethodType {
+  BANK_ACCOUNT
+  MOBILE_MONEY
+  USSD
+  CARD
+}
+
+enum PayoutVerificationStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+enum AiTone {
+  FRIENDLY
+  PROFESSIONAL
+  PLAYFUL
+  CONCISE
+}
+
+enum AiTemplateCategory {
+  GREETING
+  PRICE_INQUIRY
+  ORDER_CONFIRMATION
+  SHIPPING_INFO
+  PAYMENT_REMINDER
+  ABANDONED_CART
+  OUT_OF_STOCK
+  REVIEW_REQUEST
+  ESCALATION
+  CUSTOM
+}
+
+// ───────────────────────────── AI ENGINE ─────────────────────────────
+
+/// Registered LLM provider configuration. Each store can register multiple
+/// models with their own API keys, rate limits, and fallback ordering.
+model AIModel {
+  id            String   @id @default(cuid())
+  storeId       String
+  provider      String   // anthropic | openai | cohere
+  modelId       String   // claude-3-haiku-20240307 | gpt-4o-mini | etc.
+  displayName   String
+  apiKeyEnc     String?  // encrypted API key (AES-256-GCM)
+  baseUrl       String?
+  maxTokens     Int      @default(4096)
+  temperature   Decimal  @default(0.7) @db.Decimal(3, 2)
+  costPerInput  Decimal? @db.Decimal(10, 6)  // per 1K tokens
+  costPerOutput Decimal? @db.Decimal(10, 6)
+  rateLimitRpm  Int      @default(60)        // requests per minute
+  isActive      Boolean  @default(true)
+  isPrimary     Boolean  @default(false)     // primary model for the store
+  priority      Int      @default(0)         // fallback ordering
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  responses  AIResponse[]
+  prompts    AIPrompt[]
+  feedbacks  AIFeedback[]
+
+  @@unique([storeId, provider, modelId])
+  @@index([storeId, isActive, priority])
+  @@map("ai_models")
+}
+
+/// Versioned prompt templates with variable slots, A/B testing support,
+/// and performance tracking (avg confidence, usage count).
+model AIPrompt {
+  id            String   @id @default(cuid())
+  storeId       String?
+  modelId       String?
+  name          String   // e.g. "auto-responder-v3", "product-description"
+  category      AiTemplateCategory @default(CUSTOM)
+  systemPrompt  String   @db.Text
+  userTemplate  String   @db.Text      // {{variable}} slots
+  variables     String[] @default([])  // declared variable names
+  language      String   @default("en")
+  version       Int      @default(1)
+  isActive      Boolean  @default(true)
+  temperature   Decimal? @db.Decimal(3, 2) // override model default
+  maxTokens     Int?     // override model default
+  usageCount    Int      @default(0)
+  avgConfidence Float    @default(0)
+  totalFeedback Int      @default(0)
+  avgRating     Float    @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  store    Store?    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  model    AIModel?  @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  responses AIResponse[]
+
+  @@unique([storeId, name, version])
+  @@index([storeId, category, isActive])
+  @@map("ai_prompts")
+}
+
+/// Every LLM-generated response is logged here for audit, caching,
+/// and continuous-learning feedback loops.
+model AIResponse {
+  id            String   @id @default(cuid())
+  storeId       String
+  promptId      String?
+  modelId       String?
+  threadId      String?  // conversation context
+  inputHash     String?  // SHA-256 of (systemPrompt + userPrompt) for cache lookup
+  systemPrompt  String   @db.Text
+  userPrompt    String   @db.Text
+  output        String   @db.Text
+  tokensInput   Int      @default(0)
+  tokensOutput  Int      @default(0)
+  latencyMs     Int      @default(0)
+  confidence    Float    @default(0)
+  cached        Boolean  @default(false)
+  escalated     Boolean  @default(false)
+  metadata      Json     @default("{}")
+  createdAt     DateTime @default(now())
+
+  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  prompt   AIPrompt? @relation(fields: [promptId], references: [id], onDelete: SetNull)
+  model    AIModel?  @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  feedbacks AIFeedback[]
+
+  @@index([storeId, createdAt])
+  @@index([storeId, promptId])
+  @@index([inputHash])
+  @@index([threadId])
+  @@map("ai_responses")
+}
+
+/// Vector embeddings for semantic search. Stores embeddings for products,
+/// customers, messages, and any other entity type.
+model AIEmbedding {
+  id         String   @id @default(cuid())
+  storeId    String
+  entityType String   // product | customer | message | document
+  entityId   String
+  text       String   @db.Text
+  embedding  Unsupported("vector(1536)")? // OpenAI text-embedding-3-small dim
+  model      String   @default("text-embedding-3-small")
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, entityType, entityId])
+  @@index([storeId, entityType])
+  @@map("ai_embeddings")
+}
+
+/// Conversation context memory. Stores the rolling context window for each
+/// WhatsApp thread so the AI can reference prior turns.
+model AIConversationContext {
+  id            String   @id @default(cuid())
+  storeId       String
+  threadId      String
+  window        Json     @default("[]")   // last N messages as [{role, content, ts}]
+  summary       String?  @db.Text         // compressed summary of older turns
+  entities      Json     @default("{}")   // accumulated entities from conversation
+  intentHistory String[] @default([])     // recent intents in order
+  sentiment     Sentiment @default(NEUTRAL)
+  messageCount  Int      @default(0)
+  expiresAt     DateTime                  // auto-cleanup TTL
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, threadId])
+  @@index([storeId, expiresAt])
+  @@map("ai_conversation_contexts")
+}
+
+/// Seller feedback on AI responses — the continuous learning signal.
+/// Feedback drives prompt optimization, confidence calibration, and
+/// escalation threshold tuning.
+model AIFeedback {
+  id          String   @id @default(cuid())
+  storeId     String
+  responseId  String
+  modelId     String?
+  type        AIFeedbackType @default(RATING)
+  rating      Int?     // 1-5 stars
+  comment     String?  @db.Text
+  correction  String?  @db.Text  // seller's corrected response
+  tags        String[] @default([])  // helpful, wrong, too_slow, rude, etc.
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  response AIResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  model    AIModel?  @relation(fields: [modelId], references: [id], onDelete: SetNull)
+
+  @@index([storeId, createdAt])
+  @@index([responseId])
+  @@index([storeId, type])
+  @@map("ai_feedbacks")
+}
+
+/// Tracks confidence scores and escalation decisions per use-case.
+/// Sellers can tune thresholds per use-case to control the human/AI handoff.
+model AIConfidenceScore {
+  id          String   @id @default(cuid())
+  storeId     String
+  useCase     String   // auto_response | product_description | pricing | fraud | etc.
+  confidence  Float
+  threshold   Float    @default(0.6)
+  escalated   Boolean  @default(false)
+  responseId  String?
+  context     Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, useCase, createdAt])
+  @@index([storeId, escalated])
+  @@map("ai_confidence_scores")
+}
+
+enum AIFeedbackType {
+  RATING
+  CORRECTION
+  THUMBS_UP
+  THUMBS_DOWN
+  TAG
+}
+
+enum AIUseCase {
+  AUTO_RESPONSE
+  PRODUCT_DESCRIPTION
+  PRICING_SUGGESTION
+  CUSTOMER_SEGMENT
+  SALES_FORECAST
+  FRAUD_DETECTION
+  DELIVERY_PREDICTION
+  INSIGHTS
+  REPORT
+  INTENT_DETECTION
+  ENTITY_EXTRACTION
+}

@@ -1,0 +1,39 @@
+# CODEOWNERS — every PR requires review from at least one owner per touched path.
+# Format: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+*                                   @wco/platform-team
+
+# Platform core
+/apps/backend/**                     @wco/backend-guild @wco/platform-team
+/packages/database/**               @wco/backend-guild @wco/data-team
+/packages/auth/**                   @wco/security-team @wco/backend-guild
+
+# AI
+/apps/ai-engine/**                  @wco/ai-guild
+/docs/guides/ai/**                  @wco/ai-guild
+
+# Frontend & mobile
+/apps/frontend/**                   @wco/frontend-guild
+/apps/admin-dashboard/**            @wco/frontend-guild @wco/platform-team
+/apps/mobile/**                     @wco/mobile-guild
+/packages/ui/**                     @wco/design-system @wco/frontend-guild
+
+# Edge services
+/apps/webhook-handler/**            @wco/backend-guild @wco/sre-team
+
+# Payments & logistics (money movement = security review required)
+/packages/payments/**               @wco/payments-team @wco/security-team
+/packages/logistics/**              @wco/backend-guild
+
+# Infrastructure & security config
+/infra/**                           @wco/sre-team
+/.github/workflows/**               @wco/sre-team @wco/security-team
+/infra/security/**                  @wco/security-team
+/packages/tsconfig/**               @wco/platform-team
+/packages/eslint-config/**          @wco/platform-team
+
+# Docs
+/docs/**                            @wco/platform-team
+README.md                           @wco/platform-team
+CONTRIBUTING.md                     @wco/platform-team
+SECURITY.md                         @wco/security-team

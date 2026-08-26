@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * WCO design tokens — Tailwind theme extension lives in tailwind.config.ts.
+ * Mobile-first: base styles target 360px Android screens on 3G; every
+ * decorative effect is progressive enhancement, never load-bearing.
+ */
+:root {
+  --brand: #059669;
+  --surface: #f8fafc;
+  --surface: #ffffff;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Dark mode surface tokens */
+  .dark {
+    --surface: #0f172a;
+    color-scheme: dark;
+  }
+
+  .dark body {
+    @apply bg-slate-900 text-slate-100;
+  }
+
+  /* Respect low-power devices */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5
+      text-sm font-semibold text-white transition-colors hover:bg-emerald-700
+      focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2
+      focus-visible:outline-emerald-600 disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-sm;
+  }
+
+  .dark .card {
+    @apply border-slate-700 bg-slate-800;
+  }
+
+  .input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm
+      placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none
+      focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-50;
+  }
+
+  .dark .input {
+    @apply border-slate-600 bg-slate-800 text-slate-100 placeholder:text-slate-500
+      focus:border-emerald-400 focus:ring-emerald-400 disabled:bg-slate-800;
+  }
+
+  /* Toast notification styles */
+  .toast-container {
+    @apply pointer-events-none fixed inset-0 z-[100] flex flex-col items-end justify-end gap-2 p-4;
+  }
+
+  .toast {
+    @apply pointer-events-auto flex items-center gap-3 rounded-xl border border-slate-200
+      bg-white px-4 py-3 shadow-lg;
+  }
+
+  .dark .toast {
+    @apply border-slate-700 bg-slate-800;
+  }
+
+  .toast-success {
+    @apply border-emerald-200 bg-emerald-50;
+  }
+
+  .dark .toast-success {
+    @apply border-emerald-800 bg-emerald-900/30;
+  }
+
+  .toast-error {
+    @apply border-red-200 bg-red-50;
+  }
+
+  .dark .toast-error {
+    @apply border-red-800 bg-red-900/30;
+  }
+
+  /* Modal overlay */
+  .modal-overlay {
+    @apply fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm;
+  }
+
+  .modal-content {
+    @apply w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl;
+  }
+
+  .dark .modal-content {
+    @apply bg-slate-800;
+  }
+
+  /* Skeleton loading */
+  .skeleton {
+    @apply animate-pulse rounded-lg bg-slate-200;
+  }
+
+  .dark .skeleton {
+    @apply bg-slate-700;
+  }
+}

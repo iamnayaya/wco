@@ -1,0 +1,9 @@
+{
+  "extends": "@wco/tsconfig/node-service",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "tests"]
+}

@@ -1,0 +1,50 @@
+# Pod Security Standard: restricted, applied at namespace level.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wco-prod
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Disallow privileged workloads platform-wide (defense in depth vs PSS).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged-containers
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-privileged
+      match:
+        resources:
+          kinds: [Pod]
+      validate:
+        message: "Privileged containers are not allowed."
+        pattern:
+          spec:
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-ro-rootfs
+spec:
+  validationFailureAction: Enforce
+  rules:
+    - name: check-readonly-root
+      match:
+        resources:
+          kinds: [Pod]
+      validate:
+        message: "Containers must use readOnlyRootFilesystem."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true

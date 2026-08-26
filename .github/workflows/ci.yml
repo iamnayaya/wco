@@ -1,0 +1,224 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Quality Gates — lint, typecheck (parallelized, cache-accelerated)
+  # ---------------------------------------------------------------------------
+  quality:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # turbo needs full history for affected detection
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint affected packages
+        run: npx turbo run lint --filter=...[origin/main]
+
+      - name: Typecheck affected packages
+        run: npx turbo run typecheck --filter=...[origin/main]
+
+  # ---------------------------------------------------------------------------
+  # Security scanning — secrets, SAST, dependencies
+  # ---------------------------------------------------------------------------
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: SAST (Semgrep)
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            --config p/default --config p/typescript --config p/secrets
+            --config ./tools/security/semgrep-rules.yml
+
+      - name: Dependency audit (fail on high+)
+        run: |
+          npm audit --audit-level=high || \
+          (echo "::warning::npm audit found issues, check report" && exit 1)
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  # ---------------------------------------------------------------------------
+  # Unit tests — sharded across runners for speed
+  # ---------------------------------------------------------------------------
+  test-unit:
+    name: Unit Tests (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Run unit tests
+        run: npx turbo run test:unit --filter=...[origin/main] -- --shard=${{ matrix.shard }}/4 --coverage
+      - name: Upload coverage to Codecov
+        if: matrix.shard == 1
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: unit
+
+  # ---------------------------------------------------------------------------
+  # Integration tests — real infra via Testcontainers
+  # ---------------------------------------------------------------------------
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Run integration tests (Testcontainers spins up PG/Redis/RMQ)
+        run: npx turbo run test:integration --filter=...[origin/main]
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "false"
+
+  # ---------------------------------------------------------------------------
+  # Build & push images on main only
+  # ---------------------------------------------------------------------------
+  build-images:
+    name: Build Images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing
+    needs: [quality, security, test-unit, test-integration]
+    outputs:
+      digest_backend: ${{ fromJSON(steps.meta-backend.outputs.json).digest }}
+    strategy:
+      matrix:
+        app: [backend, frontend, ai-engine, webhook-handler]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.app }}
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest
+
+      - name: Build and push ${{ matrix.app }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.${{ matrix.app == 'webhook-handler' && 'backend' || matrix.app }}
+          target: production
+          push: true
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Sign image (cosign keyless)
+        run: |
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+          cosign sign --yes ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.app }}:${{ steps.meta-backend.outputs.version }} || echo "::warning::cosign unavailable"
+
+  # ---------------------------------------------------------------------------
+  # Deploy to dev environment (automatic)
+  # ---------------------------------------------------------------------------
+  deploy-dev:
+    name: Deploy → Dev
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: development
+    timeout-minutes: 15
+    needs: build-images
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEV_DEPLOY_ROLE }}
+          aws-region: af-south-1
+
+      - name: Trigger ArgoCD sync
+        run: |
+          argocd app set wco-dev --helm-set image.tag=$(git rev-parse --short HEAD)-main
+          argocd app wait wco-dev --health --timeout 600
+
+      - name: Smoke test
+        run: |
+          curl -fsS https://api.dev.wco.com/health | grep -q '"status":"ok"'
+          curl -fsS https://dev.wco.com/api/health | grep -q '"status":"ok"'

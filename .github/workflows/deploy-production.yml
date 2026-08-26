@@ -1,0 +1,138 @@
+name: Production Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "RELEASE" to confirm production deployment'
+        required: true
+        default: ""
+
+concurrency: production-deploy
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  validate-input:
+    name: Validate Release Request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require explicit confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "RELEASE" ]; then
+            echo "::error::Must type RELEASE to trigger production deploy"
+            exit 1
+          fi
+
+  pre-flight:
+    name: Pre-Flight Checks
+    runs-on: ubuntu-latest
+    needs: validate-input
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Full quality gate (not affected-only)
+        run: npx turbo run lint typecheck test test:integration
+
+      - name: Verify image signatures exist for all services
+        run: ./infra/scripts/verify-release-signatures.sh ${{ github.sha }}
+
+      - name: Check migration compatibility (backward-compatible only)
+        run: npm run db:migrate:check --workspace=packages/database
+
+      - name: Create deployment record (audit trail)
+        run: |
+          echo "release=${{ github.sha }} actor=${{ github.actor }} time=$(date -u +%FT%TZ)" \
+            >> deploy-record.txt
+          cat deploy-record.txt
+
+  migrate-database:
+    name: Database Migration (expand phase)
+    runs-on: ubuntu-latest
+    environment: production-migrations
+    needs: pre-flight
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_MIGRATION_ROLE }}
+          aws-region: af-south-1
+
+      - name: Run migrations via Kubernetes Job (locks out concurrent deploys)
+        run: |
+          kubectl create job --from=cronjob/db-migrate \
+            "migrate-$(git rev-parse --short HEAD)" -n wco-prod
+          kubectl wait --for=condition=complete \
+            "job/migrate-$(git rev-parse --short HEAD)" -n wco-prod --timeout=600s
+          kubectl logs "job/migrate-$(git rev-parse --short HEAD)" -n wco-prod | tail -20
+
+  canary-rollout:
+    name: Canary Rollout (5% → 25% → 100%)
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://app.wco.com
+    needs: migrate-database
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trigger Argo Rollouts promotion
+        run: |
+          kubectl argo rollouts set image backend \
+            backend=${{ env.REGISTRY }}/${{ github.repository }}/backend:${{ github.sha }} \
+            -n wco-prod
+          kubectl argo rollouts status backend -n wco-prod --timeout 30m
+
+      - name: Verify SLOs during rollout
+        run: |
+          # Auto-rollback happens in Argo analysis if error rate >2x baseline
+          curl -fsS https://app.wco.com/api/health
+          ./infra/scripts/check-slo-burn.sh --window=10m --max-burn-rate=2
+
+  post-deploy:
+    name: Post-Deploy Verification
+    needs: canary-rollout
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Critical path verification (synthetic transactions)
+        run: |
+          ./infra/scripts/post-deploy-checks.sh \
+            --check signup,login,product-create,payment-link,webhook-e2e
+
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: ${{ secrets.SLACK_DEPLOY_CHANNEL }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      - name: Tag release
+        run: |
+          git config user.name "wco-release-bot"
+          git tag "prod-$(date +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)"
+          git push origin --tags
+
+  rollback-on-failure:
+    name: Auto-Rollback
+    if: failure()
+    needs: [canary-rollout]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Abort rollout & revert to stable
+        run: |
+          kubectl argo rollouts undo backend -n wco-prod
+          kubectl argo rollouts status backend -n wco-prod --timeout 10m

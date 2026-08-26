@@ -1,0 +1,69 @@
+# =============================================================================
+# WCO Backend — Multi-stage production Dockerfile
+# Security: non-root user, distroless-style minimal, read-only friendly
+# =============================================================================
+
+FROM node:20-alpine AS base
+RUN apk add --no-cache libc6-compat tini
+WORKDIR /app
+
+# ---- Dependencies stage (cached layer) -------------------------------------
+FROM base AS deps
+COPY package.json package-lock.json ./
+COPY apps/backend/package.json apps/backend/
+COPY packages/shared/package.json packages/shared/
+COPY packages/config/package.json packages/config/
+COPY packages/database/package.json packages/database/
+COPY packages/auth/package.json packages/auth/
+COPY packages/payments/package.json packages/payments/
+COPY packages/logistics/package.json packages/logistics/
+COPY packages/analytics/package.json packages/analytics/
+COPY packages/messaging/package.json packages/messaging/
+COPY packages/tsconfig/package.json packages/tsconfig/
+COPY packages/eslint-config/package.json packages/eslint-config/
+RUN npm ci --ignore-scripts
+
+# ---- Build stage ------------------------------------------------------------
+FROM base AS build
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/backend/node_modules ./apps/backend/node_modules
+COPY tsconfig.json turbo.json ./
+COPY packages/ ./packages/
+COPY apps/backend/ ./apps/backend/
+ENV NODE_ENV=production
+RUN npx turbo run build --filter=backend
+
+# ---- Development target ------------------------------------------------------
+FROM base AS development
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+ENV NODE_ENV=development
+EXPOSE 4000
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["npx", "turbo", "run", "dev", "--filter=backend"]
+
+# ---- Production target -------------------------------------------------------
+FROM node:20-alpine AS production
+RUN apk add --no-cache tini curl
+# Non-root user
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
+WORKDIR /app
+
+# Copy only what's needed to run
+COPY --from=build --chown=appuser:appgroup /app/apps/backend/dist ./dist
+COPY --from=build --chown=appuser:appgroup /app/apps/backend/prisma ./prisma
+COPY --from=build --chown=appuser:appgroup /app/node_modules ./node_modules
+COPY --from=build --chown=appuser:appgroup /app/packages/database/src/generated ./packages/database/src/generated
+
+ENV NODE_ENV=production \
+    PORT=4000 \
+    UV_THREADPOOL_SIZE=8
+
+USER 10001
+EXPOSE 4000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD curl -fsS http://localhost:4000/health || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "dist/main.js"]

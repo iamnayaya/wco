@@ -1,0 +1,77 @@
+# HPA — scale on CPU + custom RabbitMQ queue depth (via KEDA in prod).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 6
+  maxReplicas: 40
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100 # double capacity fast — WhatsApp traffic is bursty
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: webhook-handler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: webhook-handler
+  minReplicas: 4
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30 # PSP retries punish slow scaling
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+---
+# AI engine scales on queue depth, not CPU — LLM calls are IO-bound.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ai-engine
+spec:
+  scaleTargetRef:
+    name: ai-engine
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  triggers:
+    - type: rabbitmq
+      metadata:
+        queueName: ai-engine.messages
+        mode: QueueLength
+        value: "50" # one extra pod per 50 pending messages

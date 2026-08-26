@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "WCO",
+    "slug": "wco-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "scheme": "wco",
+    "splash": {
+      "backgroundColor": "#059669",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "package": "com.wco.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#059669"
+      },
+      "permissions": ["POST_NOTIFICATIONS"]
+    },
+    "ios": {
+      "bundleIdentifier": "com.wco.mobile",
+      "supportsTablet": false
+    },
+    "extra": {
+      "apiUrl": "http://localhost:4000",
+      "eas": {
+        "projectId": ""
+      }
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "color": "#059669"
+        }
+      ],
+      "expo-updates"
+    ]
+  }
+}

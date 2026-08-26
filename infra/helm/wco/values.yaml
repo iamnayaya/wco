@@ -1,0 +1,75 @@
+# Default values for the wco chart.
+# Environments override via -f values-{dev,staging,prod}.yaml.
+
+global:
+  imageRegistry: ghcr.io/wco/wco
+  imagePullPolicy: IfNotPresent
+  environment: development
+
+backend:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: backend
+    tag: latest
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  env:
+    LOG_LEVEL: info
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+webhookHandler:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: webhook-handler
+    tag: latest
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+frontend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: frontend
+    tag: latest
+
+aiEngine:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ai-engine
+    tag: latest
+  # LLM concurrency — keep low; upstream rate limits are the real ceiling
+  queueConcurrency: 8
+
+# External secrets (AWS Secrets Manager → K8s) via External Secrets Operator.
+externalSecrets:
+  enabled: false
+  secretStoreName: aws-secrets-manager
+  remoteKeys:
+    backend: wco/prod/backend
+    webhookHandler: wco/prod/webhook-handler
+
+ingress:
+  enabled: true
+  className: alb
+  hosts:
+    app: app.wco.africa
+    api: api.wco.africa
+
+postgresql:
+  enabled: true # disable in prod; use RDS
+  auth:
+    database: wco
+redis:
+  enabled: true # disable in prod; use ElastiCache
+
+rabbitmq:
+  url: amqp://wco:rabbitmq.wco-dev.svc.cluster.local
