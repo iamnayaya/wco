@@ -893,6 +893,7 @@ model PaymentTransaction {
 /// audit + replay. Deduplication uses the unique (provider, eventId) pair.
 model PaymentWebhook {
   id            String            @id @default(cuid())
+  paymentId     String?
   provider      PaymentProvider
   eventId       String?           // PSP-unique event id (for dedupe)
   eventType     String
@@ -903,8 +904,11 @@ model PaymentWebhook {
   errorReason   String?
   createdAt     DateTime          @default(now())
 
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
   @@unique([provider, eventId])
   @@index([provider, status])
+  @@index([paymentId])
   @@index([createdAt])
   @@map("payment_webhooks")
 }
@@ -1026,6 +1030,7 @@ model DeliveryClaim {
   updatedAt    DateTime            @updatedAt
 
   delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  store    Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
   @@index([storeId, status])
   @@index([deliveryId])
@@ -1051,6 +1056,8 @@ model DeliveryAddress {
   meta       Json     @default("{}")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
   @@index([storeId])
   @@index([storeId, isDefault])
@@ -1100,6 +1107,8 @@ model DeliveryZone {
   meta      Json     @default("{}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
   @@index([storeId])
   @@index([storeId, isActive])
@@ -1402,7 +1411,7 @@ model AiResponseTemplate {
 
   @@unique([storeId, templateName]) // NULL storeId rows are exempt by SQL NULL semantics
   @@index([category, language, isActive])
-  @@map("ai_responses")
+  @@map("ai_response_templates")
 }
 
 /// Media attached to a message (inbound WhatsApp media or outbound S3 upload).
