@@ -944,6 +944,8 @@ model Delivery {
   carrier           LogisticsCarrier @default(MANUAL)
   trackingCode      String?
   status            DeliveryStatus   @default(QUOTED)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
   pickupAddress     String?
   pickupLat         Float?
   pickupLng         Float?
