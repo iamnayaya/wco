@@ -5,6 +5,7 @@ import jwt, { type SignOptions } from 'jsonwebtoken';
 
 import { env } from '../config/env.js';
 import { getRedis } from '../lib/redis.js';
+import { logger } from '../lib/logger.js';
 import { hashToken } from '../utils/crypto.js';
 
 /**
@@ -95,7 +96,15 @@ export class TokenService {
     if (!decoded.jti) return;
     const ttl = decoded.exp ? decoded.exp - Math.floor(Date.now() / 1000) : 900;
     if (ttl <= 0) return;
-    await getRedis().setex(`auth:jti:${decoded.jti}`, ttl, '1');
+    try {
+      await getRedis().setex(`auth:jti:${decoded.jti}`, ttl, '1');
+    } catch (err) {
+      // Redis unreachable — revocation is best-effort; the 15m access-token
+      // TTL bounds how long a denounced token stays usable.
+      logger.warn('token.denylist-store-failed', {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   async isAccessTokenDenied(token: string): Promise<boolean> {
@@ -106,8 +115,14 @@ export class TokenService {
       return true; // structurally invalid tokens are "denied" by definition
     }
     if (!decoded.jti) return false; // legacy token without jti - cannot check
-    const hit = await getRedis().get(`auth:jti:${decoded.jti}`);
-    return hit !== null;
+    try {
+      const hit = await getRedis().get(`auth:jti:${decoded.jti}`);
+      return hit !== null;
+    } catch {
+      // Redis unreachable — treat tokens as valid; the short access-token TTL
+      // bounds the revocation window.
+      return false;
+    }
   }
 }
 

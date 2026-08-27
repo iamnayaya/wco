@@ -1,0 +1,25 @@
+{
+  "type": "web_service",
+  "name": "wco-backend",
+  "ownerId": "tea-d21e0sm3jp1c73foe60g",
+  "repo": "https://github.com/iamnayaya/wco.git",
+  "branch": "master",
+  "serviceDetails": {
+    "runtime": "node",
+    "plan": "free",
+    "region": "oregon",
+    "envSpecificDetails": {
+      "buildCommand": "npm install && cd apps/backend && npx prisma generate --schema ../../packages/database/prisma/schema.prisma && npm run build",
+      "startCommand": "cd apps/backend && node dist/main.js"
+    }
+  },
+  "envVars": [
+    {"key": "NODE_ENV", "value": "production"},
+    {"key": "PORT", "value": "10000"},
+    {"key": "DATABASE_URL", "value": "postgresql://placeholder:placeholder@localhost:5432/wco"},
+    {"key": "JWT_SECRET", "value": "wco-prod-jwt-secret-min-32-chars-long-2024!"},
+    {"key": "JWT_REFRESH_SECRET", "value": "wco-prod-refresh-secret-min-32-chars-2024!"},
+    {"key": "CORS_ORIGIN", "value": "*"},
+    {"key": "LOG_LEVEL", "value": "info"}
+  ]
+}

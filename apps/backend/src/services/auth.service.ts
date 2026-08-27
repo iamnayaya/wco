@@ -147,12 +147,24 @@ export class AuthService {
     // with the merchant inside one transaction).
 
     const redis = (await import('../lib/redis.js')).getRedis();
-    await redis.del(failKey(user.id));
+    try {
+      await redis.del(failKey(user.id)); // best-effort: lockout bookkeeping
+    } catch (err) {
+      logger.warn('auth.redis-unavailable', { message: err instanceof Error ? err.message : String(err) });
+    }
 
     if (user.twoFactor?.confirmedAt) {
       const challengeId = randomBytes(24).toString('base64url');
-      await redis.set(`wco:auth:2fa:${challengeId}`, user.id, 'EX', 300);
-      return { tokens: null, user, twoFactorChallenge: { challengeId } };
+      try {
+        await redis.set(`wco:auth:2fa:${challengeId}`, user.id, 'EX', 300);
+        return { tokens: null, user, twoFactorChallenge: { challengeId } };
+      } catch (err) {
+        // Redis unreachable → the challenge hand-off cannot persist; fall back
+        // to a direct session so sign-in still works on cache-less deployments.
+        logger.warn('auth.2fa-challenge-store-failed', {
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     await this.db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
@@ -170,29 +182,44 @@ export class AuthService {
   // --- Brute-force lockout -----------------------------------------------------
 
   private async assertNotLocked(userId: string): Promise<void> {
-    const lockedUntil = await (await import('../lib/redis.js')).getRedis().get(lockKey(userId));
-    if (lockedUntil) {
-      throw new AppError('FORBIDDEN', 'Account temporarily locked due to failed attempts', {
-        retryAfterSeconds: Math.max(0, Number(lockedUntil) - Math.floor(Date.now() / 1000)),
+    try {
+      const lockedUntil = await (await import('../lib/redis.js')).getRedis().get(lockKey(userId));
+      if (lockedUntil) {
+        throw new AppError('FORBIDDEN', 'Account temporarily locked due to failed attempts', {
+          retryAfterSeconds: Math.max(0, Number(lockedUntil) - Math.floor(Date.now() / 1000)),
+        });
+      }
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      // Redis unreachable → treat as unlocked; DB + short tokens remain the backstop.
+      logger.warn('auth.lockout-check-degraded', {
+        message: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
   private async registerFailedAttempt(user: { id: string; email: string }): Promise<void> {
-    const redis = (await import('../lib/redis.js')).getRedis();
-    const fails = await redis.incr(failKey(user.id));
-    if (fails === 1) await redis.expire(failKey(user.id), env.ACCOUNT_LOCKOUT_SECONDS);
-    if (fails >= env.ACCOUNT_LOCKOUT_THRESHOLD) {
-      await redis.set(
-        lockKey(user.id),
-        String(Math.floor(Date.now() / 1000) + env.ACCOUNT_LOCKOUT_SECONDS),
-        'EX',
-        env.ACCOUNT_LOCKOUT_SECONDS,
-      );
-      await redis.del(failKey(user.id));
-      logger.warn('auth.lockout', { userId: user.id });
-      void notificationService.sendEmail('account-locked', user.email, {
-        lockoutMinutes: Math.ceil(env.ACCOUNT_LOCKOUT_SECONDS / 60),
+    try {
+      const redis = (await import('../lib/redis.js')).getRedis();
+      const fails = await redis.incr(failKey(user.id));
+      if (fails === 1) await redis.expire(failKey(user.id), env.ACCOUNT_LOCKOUT_SECONDS);
+      if (fails >= env.ACCOUNT_LOCKOUT_THRESHOLD) {
+        await redis.set(
+          lockKey(user.id),
+          String(Math.floor(Date.now() / 1000) + env.ACCOUNT_LOCKOUT_SECONDS),
+          'EX',
+          env.ACCOUNT_LOCKOUT_SECONDS,
+        );
+        await redis.del(failKey(user.id));
+        logger.warn('auth.lockout', { userId: user.id });
+        void notificationService.sendEmail('account-locked', user.email, {
+          lockoutMinutes: Math.ceil(env.ACCOUNT_LOCKOUT_SECONDS / 60),
+        });
+      }
+    } catch (err) {
+      // Redis unreachable → nothing to track; the sign-in still rejects.
+      logger.warn('auth.lockout-tracking-failed', {
+        message: err instanceof Error ? err.message : String(err),
       });
     }
   }
@@ -318,8 +345,13 @@ export class AuthService {
     code: string,
     meta: SessionMeta = {},
   ): Promise<{ tokens: IssuedTokenPair; user: User }> {
-    const redis = (await import('../lib/redis.js')).getRedis();
-    const userId = await redis.getdel(`wco:auth:2fa:${challengeId}`);
+    let userId: string | null;
+    try {
+      const redis = (await import('../lib/redis.js')).getRedis();
+      userId = await redis.getdel(`wco:auth:2fa:${challengeId}`);
+    } catch {
+      userId = null; // Redis unreachable — challenge cannot be resolved
+    }
     if (!userId) throw new UnauthorizedError('Two-factor challenge expired, sign in again');
     const user = await this.db.user.findUnique({ where: { id: userId }, include: { twoFactor: true } });
     if (!user?.twoFactor?.confirmedAt) throw new UnauthorizedError('Two-factor challenge invalid');
