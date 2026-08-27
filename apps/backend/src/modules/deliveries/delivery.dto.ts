@@ -86,6 +86,20 @@ export const deliveryStatsQuerySchema = z.object({
   groupBy: z.enum(['day', 'week', 'month']).default('day'),
 });
 
+export const trackingQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export const createTrackingEventSchema = z.object({
+  status: z.enum(['QUOTED', 'BOOKED', 'PICKED_UP', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'CANCELLED']),
+  location: z.string().max(200).optional(),
+  note: z.string().max(500).optional(),
+  source: z.enum(['system', 'webhook', 'polling', 'manual']).default('manual'),
+  occurredAt: z.coerce.string().datetime().optional(),
+  meta: z.record(z.string(), z.unknown()).default({}),
+});
+
 export const cancelDeliverySchema = z.object({
   reason: z.string().max(500).optional(),
 });

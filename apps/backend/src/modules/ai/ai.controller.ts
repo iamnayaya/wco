@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 
 import { getStoreId } from '../../middleware/rbac.js';
-import { paginationMeta, sendSuccess } from '../../utils/api-response.js';
+import { sendSuccess } from '../../utils/api-response.js';
+import { paginationMeta } from '../../utils/offset-pagination.js';
 import { aiConfidenceService } from './services/ai-confidence.service.js';
 import { aiContextService } from './services/ai-context.service.js';
 import { aiEmbeddingService } from './services/ai-embedding.service.js';
