@@ -30,7 +30,7 @@
     "k8s:deploy:staging": "kubectl apply -k infra/kubernetes/overlays/staging",
     "k8s:deploy:prod": "kubectl apply -k infra/kubernetes/overlays/prod",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
-    "prepare": "husky install"
+    "prepare": "husky install || true"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
