@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 
-import { paginationMeta, sendSuccess } from '../../utils/api-response.js';
+import { sendSuccess } from '../../utils/api-response.js';
+import { paginationMeta } from '../../utils/offset-pagination.js';
 
 import { subscriptionPlansService } from './services/subscription-plans.service.js';
 
