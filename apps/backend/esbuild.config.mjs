@@ -10,7 +10,7 @@ const isProd = process.env.NODE_ENV === 'production';
  *    node_modules at runtime and must not be inlined.
  */
 await build({
-  entryPoints: ['src/main.ts', 'src/worker.ts'],
+  entryPoints: ['src/main.ts', 'src/worker.ts', 'src/serverless.ts'],
   outdir: 'dist',
   bundle: true,
   platform: 'node',
