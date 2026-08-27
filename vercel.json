@@ -1,5 +1,5 @@
 {
-  "buildCommand": "node node_modules/prisma/build/index.js generate --schema packages/database/prisma/schema.prisma && npm run build --workspace=@wco/backend && node node_modules/prisma/build/index.js migrate deploy --schema packages/database/prisma/schema.prisma && node node_modules/tsx/dist/cli.mjs packages/database/prisma/seed.ts",
+  "buildCommand": "npm run vercel:build:backend",
   "installCommand": "npm install --legacy-peer-deps --no-audit --no-fund --include=dev",
   "rewrites": [
     {
