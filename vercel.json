@@ -1,6 +1,7 @@
 {
   "buildCommand": "npm run vercel:build:backend",
   "installCommand": "npm install --legacy-peer-deps --no-audit --no-fund --include=dev",
+  "outputDirectory": "public",
   "rewrites": [
     {
       "source": "/(.*)",
