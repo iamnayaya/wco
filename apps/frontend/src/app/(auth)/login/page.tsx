@@ -20,7 +20,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (login.isSuccess && !('requires2FA' in (login.data ?? {}))) {
-      router.replace('/');
+      router.replace('/dashboard');
     }
     if (login.isSuccess && 'requires2FA' in (login.data ?? {})) {
       const { tempToken } = login.data as { tempToken: string };

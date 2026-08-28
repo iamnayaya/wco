@@ -31,7 +31,7 @@ import { useAuthStore } from '../../store/slices/auth-slice';
 import { useLogout } from '../../hooks/use-auth';
 
 const PRIMARY_NAV = [
-  { href: '/', label: 'Overview', icon: LayoutDashboard },
+  { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
   { href: '/conversations', label: 'Inbox', icon: MessageSquare },
   { href: '/orders', label: 'Orders', icon: ShoppingCart },
   { href: '/products', label: 'Products', icon: Package },
@@ -51,7 +51,7 @@ const SECONDARY_NAV = [
 ] as const;
 
 function isActive(pathname: string, href: string): boolean {
-  return href === '/' ? pathname === '/' : pathname.startsWith(href);
+  return href === '/dashboard' ? pathname === '/dashboard' : pathname.startsWith(href);
 }
 
 export function Sidebar() {
@@ -79,7 +79,7 @@ export function Sidebar() {
         {/* Logo */}
         <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 px-3 dark:border-slate-700">
           {!collapsed && (
-            <Link href="/" className="flex items-center gap-2">
+            <Link href="/dashboard" className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-white">
                 <MessageCircle className="h-4 w-4" />
               </div>
@@ -89,7 +89,7 @@ export function Sidebar() {
             </Link>
           )}
           {collapsed && (
-            <Link href="/" className="mx-auto flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-white">
+            <Link href="/dashboard" className="mx-auto flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-white">
               <MessageCircle className="h-4 w-4" />
             </Link>
           )}
