@@ -8,9 +8,9 @@ console.log('[wco] init: ready');
 export default function handle(req: any, res: any): void {
   console.log('[wco] hit', req.method, req.url, req.originalUrl ?? '');
   const watchdog = setTimeout(() => {
-    console.error('[wco] watchdog fired — no response within 15s');
-    if (!res.headersSent) res.status(502).json({ error: 'handler exceeded 15s', watchdog: true });
-  }, 15_000);
+    console.error('[wco] watchdog fired — no response within 60s');
+    if (!res.headersSent) res.status(502).json({ error: 'handler exceeded 60s', watchdog: true });
+  }, 60_000);
   res.on('finish', () => {
     clearTimeout(watchdog);
     console.error('[wco] done', res.statusCode);
