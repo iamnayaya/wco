@@ -14,6 +14,8 @@ import { createApp } from './app.js';
 
 export const app = createApp();
 
+export { createApp };
+
 const handler = serverless(app);
 
 export default handler as (event: unknown, context: unknown) => Promise<unknown>;

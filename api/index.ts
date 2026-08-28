@@ -1,40 +1,34 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-let loadError: string | undefined;
-let theHandler: unknown;
+import serverless from 'serverless-http';
+import { createApp } from '../apps/backend/dist/serverless.js';
 
-try {
-  const mod = require('../apps/backend/dist/serverless.js') as any;
-  theHandler = mod.default ?? mod;
-  console.log('[wco] serverless bundle ready', typeof theHandler);
-} catch (err: any) {
-  loadError = `${err?.message ?? err}${err?.stack ? `\n${err.stack}` : ''}`;
-  console.error('[wco] serverless bundle init failed', loadError);
-}
+console.log('[wco] init: building app');
+const app = createApp();
+const handler = serverless(app);
+console.log('[wco] init: ready');
 
-export default async function handler(req: any, res: any): Promise<void> {
+export default async function handle(req: any, res: any): Promise<void> {
   console.log('[wco] hit', req.method, req.url);
-  if (!theHandler) {
-    res.status(500).json({ error: 'serverless bundle failed to initialize', loadError });
-    return;
-  }
-  const timeout = setTimeout(() => {
-    console.error('[wco] watchdog fired — handler did not finish within 20s');
-    if (!res.headersSent) {
-      res.status(502).json({ error: 'handler exceeded 20s', watchdog: true });
-    }
-  }, 20_000);
+  let watchdog: any = null;
   try {
-    const result = (theHandler as (req: any, res: any) => unknown)(req, res);
-    if (result && typeof (result as any).then === 'function') {
-      const r = await (result as Promise<any>);
-      if (r && !res.headersSent) {
-        res.status(r.statusCode ?? 200).json(r.body);
+    const p = (handler as (req: any, res: any) => unknown)(req, res);
+    if (p && typeof (p as any).then === 'function') {
+      watchdog = setTimeout(() => {
+        console.error('[wco] watchdog fired — no response within 15s');
+        if (!res.headersSent) res.status(502).json({ error: 'handler exceeded 15s', watchdog: true });
+      }, 15_000);
+      try {
+        const r = await (p as Promise<any>);
+        if (r && !res.headersSent) {
+          res.status(r.statusCode ?? 200).json(r.body);
+        }
+      } finally {
+        clearTimeout(watchdog);
       }
     }
-    clearTimeout(timeout);
   } catch (err: any) {
     console.error('[wco] handler threw', err?.message, err?.stack ?? '');
-    clearTimeout(timeout);
+    if (watchdog) clearTimeout(watchdog);
     if (!res.headersSent) {
       res.status(500).json({ error: 'handler threw', message: err?.message });
     }
