@@ -3,7 +3,7 @@ let loadError: string | undefined;
 let theHandler: unknown;
 
 try {
-  const mod = require('../apps/backend/src/serverless.js') as any;
+  const mod = require('../apps/backend/dist/serverless.js') as any;
   theHandler = mod.default ?? mod;
   console.log('[wco] serverless bundle ready', typeof theHandler);
 } catch (err: any) {
