@@ -1,12 +1,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import mod from '../apps/backend/src/serverless.ts';
+let loadError: string | undefined;
+let theHandler: unknown;
 
-console.log('[wco] serverless bundle ready', typeof mod);
-
-const theHandler = (mod as any).default ?? mod;
+try {
+  const mod = require('../apps/backend/src/serverless.js') as any;
+  theHandler = mod.default ?? mod;
+  console.log('[wco] serverless bundle ready', typeof theHandler);
+} catch (err: any) {
+  loadError = `${err?.message ?? err}${err?.stack ? `\n${err.stack}` : ''}`;
+  console.error('[wco] serverless bundle init failed', loadError);
+}
 
 export default async function handler(req: any, res: any): Promise<void> {
   console.log('[wco] hit', req.method, req.url);
+  if (!theHandler) {
+    res.status(500).json({ error: 'serverless bundle failed to initialize', loadError });
+    return;
+  }
   const timeout = setTimeout(() => {
     console.error('[wco] watchdog fired — handler did not finish within 20s');
     if (!res.headersSent) {
