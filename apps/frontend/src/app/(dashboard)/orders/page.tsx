@@ -1,110 +1,137 @@
 'use client';
 
-import { useState } from 'react';
-import { useOrders, useUpdateOrderStatus, type Order } from '../../../hooks/use-orders';
-import { Badge, Button, EmptyState, Spinner } from '../../../components/ui';
-import { formatMoney, formatRelativeTime } from '../../../lib/utils/format';
+import { useRef, useState } from 'react';
+import { Button, StatCard } from '../../components/ui';
+import { useAuthStore } from '../../store/slices/auth-slice';
+import { formatMoney } from '../../lib/utils/format';
+import { useOrdersList, useOrderStats } from '../../components/orders/hooks';
+import { OrdersFilter } from '../../components/orders/orders-filter';
+import { OrdersTable } from '../../components/orders/orders-table';
+import { CreateOrderModal } from '../../components/orders/create-order-modal';
+import { OrderDetailModal } from '../../components/orders/order-detail-modal';
+import { exportOrdersCsv, importOrdersCsv } from '../../components/orders/api';
+import type { OrderChannel, OrderListItem, OrderStatus } from '../../components/orders/types';
 
-const STATUS_FILTERS = ['ALL', 'PENDING_PAYMENT', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const;
+const PAGE_SIZE = 20;
 
 export default function OrdersPage() {
-  const [status, setStatus] = useState<string | undefined>(undefined);
-  const orders = useOrders({ limit: 20, status });
+  const role = useAuthStore((s) => s.user?.role);
+  const isOwnerAdmin = role === 'OWNER' || role === 'ADMIN';
+
+  const [status, setStatus] = useState<OrderStatus | undefined>(undefined);
+  const [channel, setChannel] = useState<OrderChannel | undefined>(undefined);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [showCreate, setShowCreate] = useState(false);
+  const [viewOrder, setViewOrder] = useState<OrderListItem | null>(null);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const orders = useOrdersList({ page, pageSize: PAGE_SIZE, status, channel, q: search || undefined });
+  const stats = useOrderStats();
+
+  function onChanged() {
+    setViewOrder(null);
+  }
+
+  function handleExport() {
+    exportOrdersCsv({ status, channel, q: search || undefined });
+  }
+
+  async function handleImportFile(file: File) {
+    const report = await importOrdersCsv(file);
+    setImportMsg(`Imported ${report.created} orders${report.failedRows.length ? `, ${report.failedRows.length} failed` : ''}.`);
+    window.setTimeout(() => setImportMsg(null), 6000);
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-bold text-slate-900">Orders</h1>
-        <div className="flex gap-1.5 overflow-x-auto">
-          {STATUS_FILTERS.map((filter) => (
-            <button
-              key={filter}
-              onClick={() => setStatus(filter === 'ALL' ? undefined : filter)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
-                (filter === 'ALL' && !status) || status === filter
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {filter === 'ALL' ? 'All' : filter.replaceAll('_', ' ')}
-            </button>
-          ))}
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" className="!px-3 !py-2 text-xs" onClick={handleExport}>
+            Export CSV
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            aria-label="Import orders CSV"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleImportFile(file);
+              e.target.value = '';
+            }}
+          />
+          <Button variant="secondary" className="!px-3 !py-2 text-xs" onClick={() => fileInputRef.current?.click()}>
+            Import CSV
+          </Button>
+          <Button className="!px-3 !py-2 text-xs" onClick={() => setShowCreate(true)}>
+            + New order
+          </Button>
         </div>
       </div>
 
-      {orders.isLoading ? (
-        <div className="flex h-48 items-center justify-center"><Spinner /></div>
-      ) : (orders.data?.items.length ?? 0) === 0 ? (
-        <EmptyState title="No orders yet" description="Orders created in chats and the dashboard appear here." />
-      ) : (
-        <>
-          <ul className="space-y-2">
-            {orders.data?.items.map((order: Order) => (
-              <OrderRow key={order.id} order={order} />
-            ))}
-          </ul>
-          {orders.data?.nextCursor && (
-            <div className="flex justify-center pt-2">
-              <Button
-                variant="secondary"
-                loading={orders.isFetching}
-                onClick={() =>
-                  void orders.refetch() // cursor pages handled by query params in v1
-                }
-              >
-                Load more
-              </Button>
-            </div>
-          )}
-        </>
+      {/* Import result notification */}
+      {importMsg && (
+        <div
+          role="status"
+          className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800"
+        >
+          {importMsg}
+        </div>
       )}
+
+      {/* Stats */}
+      {stats.data ? (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <StatCard label="Total orders" value={String(stats.data.total)} />
+          <StatCard label="Revenue" value={formatMoney(stats.data.revenue)} />
+          <StatCard label="Avg order value" value={formatMoney(stats.data.avgOrderValue)} />
+          <StatCard label="Fulfilment rate" value={`${Math.round(stats.data.fulfilmentRate)}%`} />
+        </div>
+      ) : null}
+
+      {/* Filters */}
+      <OrdersFilter
+        status={status}
+        channel={channel}
+        search={search}
+        onStatusChange={(s) => {
+          setStatus(s);
+          setPage(1);
+        }}
+        onChannelChange={(c) => {
+          setChannel(c);
+          setPage(1);
+        }}
+        onSearchChange={(q) => {
+          setSearch(q);
+          setPage(1);
+        }}
+      />
+
+      <OrdersTable
+        orders={orders.data?.items ?? []}
+        meta={orders.data?.meta}
+        loading={orders.isLoading}
+        onView={setViewOrder}
+        onPageChange={setPage}
+      />
+
+      {viewOrder && (
+        <OrderDetailModal
+          orderId={viewOrder.id}
+          orderNumber={viewOrder.orderNumber}
+          customerName={viewOrder.customer?.name}
+          customerPhone={viewOrder.customer?.waPhone}
+          isOwnerAdmin={isOwnerAdmin}
+          onClose={() => setViewOrder(null)}
+          onChanged={onChanged}
+        />
+      )}
+      {showCreate && <CreateOrderModal onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); setPage(1); }} />}
     </div>
-  );
-}
-
-function OrderRow({ order }: { order: Order }) {
-  const updateStatus = useUpdateOrderStatus();
-
-  return (
-    <li className="card flex flex-wrap items-center justify-between gap-3 p-4">
-      <div className="min-w-0">
-        <p className="text-sm font-semibold text-slate-900">{order.orderNumber}</p>
-        <p className="text-xs text-slate-500">{formatRelativeTime(order.createdAt)}</p>
-      </div>
-      <div className="flex items-center gap-3">
-        <span className="text-sm font-bold tabular-nums">{formatMoney(order.total ?? order.subtotal ?? 0)}</span>
-        <Badge label={order.status} />
-        {order.status === 'PAID' && (
-          <Button
-            variant="ghost"
-            className="!py-1 !px-2 text-xs"
-            disabled={updateStatus.isPending}
-            onClick={() => updateStatus.mutate({ id: order.id, status: 'PROCESSING' })}
-          >
-            Mark processing
-          </Button>
-        )}
-        {order.status === 'PROCESSING' && (
-          <Button
-            variant="ghost"
-            className="!py-1 !px-2 text-xs"
-            disabled={updateStatus.isPending}
-            onClick={() => updateStatus.mutate({ id: order.id, status: 'SHIPPED' })}
-          >
-            Mark shipped
-          </Button>
-        )}
-        {order.status === 'SHIPPED' && (
-          <Button
-            variant="ghost"
-            className="!py-1 !px-2 text-xs"
-            disabled={updateStatus.isPending}
-            onClick={() => updateStatus.mutate({ id: order.id, status: 'DELIVERED' })}
-          >
-            Mark delivered
-          </Button>
-        )}
-      </div>
-    </li>
   );
 }

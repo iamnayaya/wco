@@ -1,6 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createApp } from '../apps/backend/dist/serverless.js';
 
+/** Vercel Node runtime function timeout — matches the in-handler watchdog. */
+export const maxDuration = 60;
+
 console.log('[wco] init: building app');
 const app = createApp();
 console.log('[wco] init: ready');
