@@ -1,11 +1,17 @@
 {
+  "version": 2,
   "buildCommand": "npm run vercel:build:backend",
   "installCommand": "npm install --legacy-peer-deps --no-audit --no-fund --include=dev",
-  "outputDirectory": "apps/backend/dist",
-  "rewrites": [
+  "builds": [
     {
-      "source": "/(.*)",
-      "destination": "/api"
+      "src": "api/index.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/api/index.ts"
     }
   ]
 }
