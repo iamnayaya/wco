@@ -9,7 +9,7 @@ import {
   useDashboardMessages,
   useDashboardTasks,
   useDashboardInsights,
-} from '../../hooks/use-dashboard';
+} from '../../../hooks/use-dashboard';
 import {
   WelcomeSection,
   MetricsCards,
@@ -20,8 +20,8 @@ import {
   TasksReminders,
   AIInsights,
   QuickActions,
-} from '../../components/dashboard';
-import { staggerContainer, VIEWPORT_ONCE } from '../../lib/utils/animations';
+} from '../../../components/dashboard';
+import { staggerContainer, VIEWPORT_ONCE } from '../../../lib/utils/animations';
 
 export default function DashboardPage() {
   const metrics = useDashboardMetrics();
