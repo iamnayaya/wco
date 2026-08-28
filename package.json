@@ -31,6 +31,7 @@
     "k8s:deploy:prod": "kubectl apply -k infra/kubernetes/overlays/prod",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "prepare": "husky install || true",
+    "db:provision": "node scripts/db-provision.mjs",
     "vercel:build:backend": "node scripts/vercel-backend-build.mjs"
   },
   "devDependencies": {

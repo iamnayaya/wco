@@ -7,6 +7,5 @@ const run = (cmd) => {
 
 run('node node_modules/prisma/build/index.js generate --schema packages/database/prisma/schema.prisma');
 run('npm run build --workspace=@wco/backend');
-run('node scripts/bootstrap-pgvector.mjs');
-run('node node_modules/prisma/build/index.js db push --accept-data-loss --skip-generate --schema packages/database/prisma/schema.prisma');
-run('node node_modules/tsx/dist/cli.mjs packages/database/prisma/seed.ts');
+
+console.log('[vercel-backend-build] Database provisioning is decoupled from the deploy (run: npm run db:provision).');
