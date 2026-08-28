@@ -4,7 +4,7 @@ let handlerPromise: Promise<unknown> | null = null;
 function loadHandler(): Promise<unknown> {
   if (!handlerPromise) {
     console.log('[wco] loading serverless bundle');
-    handlerPromise = import(/* webpackIgnore: true */ '../apps/backend/dist/serverless.js')
+    handlerPromise = import(/* webpackIgnore: true */ '../apps/backend/src/serverless.ts')
       .then((mod) => {
         const h = (mod as any).default ?? mod;
         console.log('[wco] serverless bundle ready', typeof h);
