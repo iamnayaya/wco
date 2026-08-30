@@ -1,7 +1,7 @@
 'use client';
 
 import { type ReactNode, useRef } from 'react';
-import { ImageUp } from 'lucide-react';
+import { Upload } from 'lucide-react';
 import { cn } from '../../lib/utils/format';
 import { Spinner } from '../../components/ui';
 
@@ -242,7 +242,7 @@ export function ImageUploader({
           </span>
         )}
         <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
-          {uploading ? <Spinner className="h-4 w-4" /> : <><ImageUp className="mr-1 inline h-4 w-4" />Change {label.toLowerCase()}</>}
+          {uploading ? <Spinner className="h-4 w-4" /> : <><Upload className="mr-1 inline h-4 w-4" />Change {label.toLowerCase()}</>}
         </span>
       </button>
     </div>

@@ -1,16 +1,16 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { Button, StatCard } from '../../components/ui';
-import { useAuthStore } from '../../store/slices/auth-slice';
-import { formatMoney } from '../../lib/utils/format';
-import { useOrdersList, useOrderStats } from '../../components/orders/hooks';
-import { OrdersFilter } from '../../components/orders/orders-filter';
-import { OrdersTable } from '../../components/orders/orders-table';
-import { CreateOrderModal } from '../../components/orders/create-order-modal';
-import { OrderDetailModal } from '../../components/orders/order-detail-modal';
-import { exportOrdersCsv, importOrdersCsv } from '../../components/orders/api';
-import type { OrderChannel, OrderListItem, OrderStatus } from '../../components/orders/types';
+import { Button, StatCard } from '../../../components/ui';
+import { useAuthStore } from '../../../store/slices/auth-slice';
+import { formatMoney } from '../../../lib/utils/format';
+import { useOrdersList, useOrderStats } from '../../../components/orders/hooks';
+import { OrdersFilter } from '../../../components/orders/orders-filter';
+import { OrdersTable } from '../../../components/orders/orders-table';
+import { CreateOrderModal } from '../../../components/orders/create-order-modal';
+import { OrderDetailModal } from '../../../components/orders/order-detail-modal';
+import { exportOrdersCsv, importOrdersCsv } from '../../../components/orders/api';
+import type { OrderChannel, OrderListItem, OrderStatus } from '../../../components/orders/types';
 
 const PAGE_SIZE = 20;
 
