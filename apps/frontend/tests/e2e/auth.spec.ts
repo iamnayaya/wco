@@ -69,7 +69,7 @@ test.describe('authentication', () => {
 
   test('surfaces a 401 with a friendly message', async ({ page }) => {
     await mockApi(page, {
-      '/auth/login': (_url) => {
+      '/auth/login': (_url: URL) => {
         throw Object.assign(new Error('Invalid credentials'), { status: 401 });
       },
     });

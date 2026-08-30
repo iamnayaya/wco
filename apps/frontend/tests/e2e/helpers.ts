@@ -4,8 +4,8 @@ import { Page } from '@playwright/test';
  * WCO Frontend — Playwright E2E helpers.
  *
  * Most specs run against a mocked API layer: `mockApi(page, mocks)` routes
- * every `**/api/v1/**` call to canned JSON, so the full browser flow is
- * exercised without provisioning a backend. The envelope shape mirrors the
+ * every path matching `/api/v1/` glob to canned JSON, so the full browser flow
+ * is exercised without provisioning a backend. The envelope shape mirrors the
  * real `api()` client (`{ success, data, error }`).
  */
 

@@ -21,7 +21,7 @@ const routes = new Map<string, Queue[]>();
 /** Register a canned response for a route. */
 export function mockRoute(
   route: string,
-  response: { status?: number; body?: unknown; error?: { message: string; code?: string } },
+  response: { method?: string; status?: number; body?: unknown; error?: { message: string; code?: string } },
 ): void {
   const key = routeKey(route, response.method ?? 'GET');
   if (!routes.has(key)) routes.set(key, []);
