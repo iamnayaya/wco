@@ -20,7 +20,7 @@ await build({
   minify: isProd,
   metafile: true,
   logLevel: 'info',
-  external: ['@prisma/client'],
+  external: ['@prisma/client', '@aws-sdk/*', '@smithy/*', 'swagger-ui-dist', 'swagger-ui-express'],
   define: {
     'process.env.NODE_ENV': `"${process.env.NODE_ENV ?? 'production'}"`,
   },
