@@ -1,0 +1,38 @@
+# Non-sensitive runtime configuration, mounted via envFrom.
+# Secrets live in AWS Secrets Manager → External Secrets Operator, never here.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  labels:
+    app.kubernetes.io/name: frontend
+data:
+  api-url: "https://api.wco.africa"     # overridden per environment by overlays
+  node-env: "production"
+  sentry-dsn-public: ""                  # public DSN is safe to embed on the client
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webhook-handler-config
+  labels:
+    app.kubernetes.io/name: webhook-handler
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  WEBHOOK_MAX_RETRIES: "8"
+  WEBHOOK_PAYLOAD_LIMIT: "1mb"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-engine-config
+  labels:
+    app.kubernetes.io/name: ai-engine
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  AI_QUEUE_CONCURRENCY: "10"
+  AI_QUEUE_TIMEOUT: "300000"
+  EMBEDDING_MODEL: "text-embedding-3-large"

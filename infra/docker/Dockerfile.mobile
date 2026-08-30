@@ -1,0 +1,56 @@
+# =============================================================================
+# WCO Mobile — Expo app build orchestrator
+#
+# The mobile app can't be "containerized" as a running service; instead we
+# build CI/CD images that run `eas build` to produce signed .apk/.aab/.ipa
+# artifacts, plus a lightweight "screenshots/typecheck" worker for PRs.
+#
+# Targets:
+#   development  — hot typecheck/jest for local + CI quality gates
+#   eas          — EAS cloud build trigger (production artifacts)
+# =============================================================================
+
+FROM node:20-alpine AS base
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# ---- Dependencies -----------------------------------------------------------
+FROM base AS deps
+COPY package.json package-lock.json ./
+COPY apps/mobile/package.json apps/mobile/
+COPY packages/ui/package.json packages/ui/
+COPY packages/shared/package.json packages/shared/
+COPY packages/tsconfig/package.json packages/tsconfig/
+COPY packages/eslint-config/package.json packages/eslint-config/
+RUN npm ci --include-workspace-root=false
+
+# ---- Development / quality-gate target --------------------------------------
+FROM base AS development
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Expo CLI + EAS are devDeps of the mobile workspace; make them callable.
+ENV CI=1 \
+    EXPO_NO_TELEMETRY=1
+
+# Jest test run (JSDOM/mocks only — no native build required in CI)
+CMD ["npx", "turbo", "run", "test", "--filter=mobile"]
+
+# ---- EAS build-trigger target -------------------------------------------------
+FROM base AS eas
+COPY --from=deps /app/node_modules ./node_modules
+COPY apps/mobile ./apps/mobile
+COPY packages ./packages
+COPY . .
+
+# Eas-cli pinned for reproducible cloud builds
+RUN npm install -g eas-cli@12 ironbird
+ENV EAS_NO_VCS=1 \
+    EAS_BUILD_AUTOCOMMIT=0 \
+    EXPO_NO_TELEMETRY=1
+
+# EAS build is invoked from CI (GitHub Actions) with the correct profile.
+# This image just guarantees deterministic tooling. Platform is chosen at build
+# time via --platform android|ios|all and --profile {preview|production}.
+ENTRYPOINT ["eas", "build", "--non-interactive", "--no-wait"]

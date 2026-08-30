@@ -37,3 +37,11 @@
 README.md                           @wco/platform-team
 CONTRIBUTING.md                     @wco/platform-team
 SECURITY.md                         @wco/security-team
+
+# QA & defect tracking
+/docs/qa/**                         @wco/qa-team @wco/platform-team
+/infra/qa/**                        @wco/qa-team @wco/sre-team
+/apps/frontend/tests/**             @wco/qa-team @wco/frontend-guild
+/apps/frontend/scripts/**           @wco/qa-team @wco/frontend-guild
+/apps/backend/tests/**              @wco/qa-team @wco/backend-guild
+/.github/ISSUE_TEMPLATE/**          @wco/qa-team @wco/platform-team

@@ -1,0 +1,11 @@
+# Terraform local artifacts — never commit state or plans (they may embed secrets).
+*.tfstate
+*.tfstate.*
+*.tfvars
+!.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+.terraform/
+.terraform.tfstate.lock.info
+*.plan

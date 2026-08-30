@@ -1,0 +1,18 @@
+# OWASP ZAP Baseline Scan — muted alerts.
+# One ZAP alert ID per line (this file is passed via `rules_file_name`).
+# These are SKIPPED for the baseline scan only. Each suppression must be
+# re-validated during the monthly security review (see runbook:security) and
+# none should be permanent without a documented risk decision.
+#
+# 10038   CSP header — set via Helm ingress annotations; full rollout pending.
+# 10021   X-Content-Type-Options — enforced by helmet on the API.
+# 10202   X-Frame-Options — migrating to CSP frame-ancestors.
+# 10035   HSTS — set at the ALB/ingress TLS layer, verify per-host.
+# 104011  Application Error Disclosure — SPA 4xx noise, triaged in full scan.
+# 10106   HTTP Server Response header — informational only.
+10038
+10021
+10202
+10035
+104011
+10106

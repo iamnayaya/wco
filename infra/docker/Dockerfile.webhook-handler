@@ -33,5 +33,9 @@ EXPOSE 4100
 
 # Webhooks must survive pod restarts — SIGTERM drains in-flight requests
 STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=20s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- http://localhost:4100/health || exit 1
+
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "dist/main.js"]

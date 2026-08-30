@@ -11,34 +11,204 @@
   --brand: #059669;
   --surface: #f8fafc;
   --surface: #ffffff;
+
+  /* --- WCO semantic tokens (light) ---
+   * Bound to designTokens.color.systemLight. These variables let runtime
+   * components (packages/ui) switch themes without JS and let dark mode be a
+   * true redesign (not inverted colors). */
+  --wco-bg: #ffffff;
+  --wco-bg-raised: #f8fafc;
+  --wco-bg-sunken: #f1f5f9;
+  --wco-surface: #ffffff;
+  --wco-surface-hover: #f1f5f9;
+  --wco-surface-active: #e2e8f0;
+  --wco-border: #e2e8f0;
+  --wco-border-strong: #cbd5e1;
+  --wco-outline: #94a3b8;
+  --wco-text: #0f172a;
+  --wco-text-muted: #475569;
+  --wco-text-faint: #64748b;
+  --wco-text-inverse: #ffffff;
+  --wco-primary: #059669;
+  --wco-primary-hover: #047857;
+  --wco-primary-active: #065f46;
+  --wco-primary-fg: #ffffff;
+  --wco-primary-soft: #ecfdf5;
+  --wco-primary-soft-fg: #064e3b;
+  --wco-secondary: #334155;
+  --wco-secondary-hover: #1e293b;
+  --wco-secondary-fg: #ffffff;
+  --wco-accent: #f59e0b;
+  --wco-accent-strong: #d97706;
+  --wco-accent-fg: #3a2a00;
+  --wco-success: #059669;
+  --wco-success-text: #047857;
+  --wco-success-bg: #d1fae5;
+  --wco-warning-text: #b45309;
+  --wco-warning-bg: #fef3c7;
+  --wco-danger: #b91c1c;
+  --wco-danger-text: #b91c1c;
+  --wco-danger-bg: #fee2e2;
+  --wco-info-text: #0369a1;
+  --wco-info-bg: #e0f2fe;
+  --wco-overlay: rgba(15, 23, 42, 0.55);
+  --wco-ring: #059669;
+  color-scheme: light;
+  --fallback-primary: #059669;
+  --fallback-primary-fg: #ffffff;
+  --fallback-accent-strong: #d97706;
+  --fallback-accent-fg: #3a2a00;
+  --fallback-text: #0f172a;
+  --fallback-border-strong: #cbd5e1;
+  --fallback-border: #e2e8f0;
+  --fallback-surface: #ffffff;
+  --fallback-danger: #b91c1c;
 }
 
 @layer base {
   html {
     -webkit-tap-highlight-color: transparent;
+    /* Fluid type root: 1rem scales gently with the viewport. */
+    font-size: clamp(15px, 1rem + 0.25vw, 17px);
+    scroll-behavior: smooth;
   }
+
+  /* WCO component-library keyframes (referenced by packages/ui inline styles) */
+  @keyframes wco-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @keyframes wco-progress-indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(350%); }
+  }
+
+  /* Animation-system keyframes (see design-tokens/animation.ts) */
+  @keyframes wco-fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes wco-fade-in-scale { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+  @keyframes wco-slide-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes wco-slide-down { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes wco-slide-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
+  @keyframes wco-slide-in-bottom { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes wco-pop { 0% { opacity: 0; transform: scale(0.5); } 60% { opacity: 1; transform: scale(1.12); } 100% { opacity: 1; transform: scale(1); } }
+  @keyframes wco-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  @keyframes wco-shimmer { 100% { transform: translateX(100%); } }
+  @keyframes wco-skeleton { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  @keyframes wco-celebrate { 0% { opacity: 0; transform: scale(0.6); } 30% { opacity: 1; transform: scale(1.15); } 55% { transform: scale(0.96); } 100% { opacity: 1; transform: scale(1); } }
+  @keyframes wco-ripple { 0% { transform: scale(0); opacity: 0.5; } 100% { transform: scale(1); opacity: 0; } }
+  @keyframes wco-icon-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+  @keyframes wco-icon-ring { 0%, 100% { transform: rotate(0); } 20% { transform: rotate(12deg); } 40% { transform: rotate(-12deg); } 60% { transform: rotate(6deg); } 80% { transform: rotate(-6deg); } }
 
   body {
     text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
   }
 
-  /* Dark mode surface tokens */
+  /* Skip-link: the first focusable element on every page. */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 1000;
+    padding: 0.75rem 1.25rem;
+    background: var(--wco-primary, #059669);
+    color: #fff;
+    border-radius: 0 0 0.5rem 0;
+    font-weight: 600;
+  }
+  .skip-link:focus {
+    left: 0;
+  }
+
+  /* Visible-focus contract — AAA-compliant ring on every interactive element. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--wco-ring, #059669);
+    outline-offset: 2px;
+  }
+
+  .dark :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline-color: var(--wco-ring, #34d399);
+  }
+
+  /* Dark mode surface tokens — a true redesign, not inverted colors.
+   * Dark surfaces are cool slate-tones with lifted primary/accent and
+   * softened borders; text flips to near-white with muted/secondary that stay
+   * AAA on dark backgrounds. Bound to designTokens.color.systemDark. */
   .dark {
-    --surface: #0f172a;
+    --wco-bg: #0b1120;
+    --wco-bg-raised: #0f172a;
+    --wco-bg-sunken: #16202e;
+    --wco-surface: #0f172a;
+    --wco-surface-hover: #1e293b;
+    --wco-surface-active: #2b3748;
+    --wco-border: #2b3748;
+    --wco-border-strong: #3b4a60;
+    --wco-outline: #64748b;
+    --wco-text: #ffffff;
+    --wco-text-muted: #94a3b8;
+    --wco-text-faint: #94a3b8;
+    --wco-text-inverse: #0b1120;
+    --wco-primary: #34d399;
+    --wco-primary-hover: #6ee7b7;
+    --wco-primary-active: #a7f3d0;
+    --wco-primary-fg: #022c22;
+    --wco-primary-soft: #022c22;
+    --wco-primary-soft-fg: #d1fae5;
+    --wco-secondary: #cbd5e1;
+    --wco-secondary-hover: #e2e8f0;
+    --wco-secondary-fg: #0b1120;
+    --wco-accent: #fbbf24;
+    --wco-accent-strong: #fcd34d;
+    --wco-accent-fg: #1d1300;
+    --wco-success: #10b981;
+    --wco-success-text: #6ee7b7;
+    --wco-success-bg: #064e3b;
+    --wco-warning-text: #fcd34d;
+    --wco-warning-bg: #78350f;
+    --wco-danger: #f87171;
+    --wco-danger-text: #fca5a5;
+    --wco-danger-bg: #7f1d1d;
+    --wco-info-text: #7dd3fc;
+    --wco-info-bg: #0c4a6e;
+    --wco-overlay: rgba(0, 0, 0, 0.6);
+    --wco-ring: #34d399;
     color-scheme: dark;
+    --fallback-primary: #34d399;
+    --fallback-primary-fg: #022c22;
+    --fallback-accent-strong: #fcd34d;
+    --fallback-accent-fg: #1d1300;
+    --fallback-text: #ffffff;
+    --fallback-border-strong: #3b4a60;
+    --fallback-border: #2b3748;
+    --fallback-surface: #0f172a;
+    --fallback-danger: #f87171;
   }
 
   .dark body {
-    @apply bg-slate-900 text-slate-100;
+    @apply bg-[#0b1120] text-[#ffffff];
   }
 
-  /* Respect low-power devices */
+  /* Respect low-power devices — collapse expressive motion to an opacity-safe minimum. */
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
       animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+    html {
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Respect reduced transparency — glass falls back to solid surfaces. */
+  @media (prefers-reduced-transparency: reduce) {
+    .glass,
+    [class*="backdrop-blur"] {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
     }
   }
 }
@@ -113,12 +283,39 @@
     @apply bg-slate-800;
   }
 
-  /* Skeleton loading */
+  /* Skeleton loading — real-shape shimmer (uses background-position keyframes). */
   .skeleton {
-    @apply animate-pulse rounded-lg bg-slate-200;
+    position: relative;
+    overflow: hidden;
+    border-radius: 0.5rem;
+    background: linear-gradient(
+      90deg,
+      var(--wco-bg-sunken, #f1f5f9) 25%,
+      var(--wco-bg-raised, #f8fafc) 50%,
+      var(--wco-bg-sunken, #f1f5f9) 75%
+    );
+    background-size: 200% 100%;
+    animation: wco-skeleton 1.4s linear infinite;
   }
 
   .dark .skeleton {
-    @apply bg-slate-700;
+    background: linear-gradient(
+      90deg,
+      var(--wco-bg-sunken, #16202e) 25%,
+      var(--wco-bg-raised, #0f172a) 50%,
+      var(--wco-bg-sunken, #16202e) 75%
+    );
+    background-size: 200% 100%;
   }
+
+  /* Celebration moment (confetti feel) — see design-tokens/animation. */
+  .celebrate {
+    animation: wco-celebrate 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+
+  /* Icon micro-motion utilities. */
+  .icon-spin { animation: wco-spin 800ms linear infinite; }
+  .icon-pulse { animation: wco-icon-pulse 1.6s ease-in-out infinite; }
+  .icon-ring { animation: wco-icon-ring 900ms ease-in-out infinite; }
+  .icon-pop { animation: wco-pop 400ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }
 }

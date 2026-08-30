@@ -1,0 +1,58 @@
+# Public surface is exactly two ALB listeners:
+#   app.wco.africa  → frontend (SSR) + webhook-handler for /api/webhooks/*
+#   api.wco.africa  → backend  (REST API)
+# TLS is terminated at the ALB with ACM certs (rotate before expiry, no cost).
+# WAF ACL is attached at the ALB for L7 DDoS/OWASP protection (see security/).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wco-public
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    # Webhook endpoints must receive raw bodies for HMAC signature verification
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+    # TLS: ACM certificate ARNs (set per-environment via overlay patch)
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:af-south-1:000000000000:certificate/REPLACE
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # WAFv2 ACL for L7 protection
+    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:af-south-1:000000000000:regional/webacl/wco-prod/REPLACE
+    # Pod-level access logging to S3 + configurable slow-start
+    alb.ingress.kubernetes.io/load-balancer-attributes: access_logs.s3.enabled=true,access_logs.s3.bucket=wco-alb-logs,access_logs.s3.prefix=wco-prod
+    alb.ingress.kubernetes.io/connection-idle-timeout: "60"
+    # Table-stakes headers
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+spec:
+  rules:
+    - host: app.wco.africa
+      http:
+        paths:
+          - path: /api/webhooks/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: webhook-handler
+                port:
+                  number: 80
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+    - host: api.wco.africa
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 80

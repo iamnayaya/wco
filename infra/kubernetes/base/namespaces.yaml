@@ -1,0 +1,33 @@
+# Namespaces for WCO. Prod is enforced by Pod Security Admission (restricted),
+# see infrastructure/security/pod-security.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wco-prod
+  labels:
+    app.kubernetes.io/part-of: wco
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wco-staging
+  labels:
+    app.kubernetes.io/part-of: wco
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wco-dev
+  labels:
+    app.kubernetes.io/part-of: wco
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wco-observability
+  labels:
+    app.kubernetes.io/part-of: wco

@@ -1,0 +1,13 @@
+# Production environment — full capacity, multi-AZ, strict safeguards.
+# Copy to terraform.tfvars (never commit secrets). Applied from CI with an
+# approval gate and values injected from AWS Secrets Manager.
+environment        = "prod"
+region             = "af-south-1"
+secondary_region   = "eu-west-1"
+cluster_name       = "wco"
+domain_name        = "wco.africa"
+
+db_password        = "REPLACE"
+rabbitmq_password  = "REPLACE"
+
+alarm_email = "platform-alerts@wco.africa"

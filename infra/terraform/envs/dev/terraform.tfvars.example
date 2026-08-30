@@ -1,6 +1,13 @@
-environment = "dev"
-region      = "eu-west-1"
+# Development environment — smallest, cheapest, single-AZ-leaning.
+# Copy to terraform.tfvars and fill real values (never commit secrets).
+environment        = "dev"
+region             = "af-south-1"
+secondary_region   = "eu-west-1"
+cluster_name       = "wco-dev"
+domain_name        = "wco.dev"
 
-db_password       = "placeholder-use-secrets-manager"
-rabbitmq_password = "placeholder-use-secrets-manager"
-private_subnet_ids = ["subnet-aaa", "subnet-bbb"]
+# From AWS Secrets Manager during CI (never in Git):
+db_password       = "REPLACE"
+rabbitmq_password = "REPLACE"
+
+alarm_email = "platform-alerts@wco.dev"

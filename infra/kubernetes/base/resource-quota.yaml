@@ -1,0 +1,40 @@
+# ResourceQuota — hard caps per namespace so one misbehaving team/service
+# can't starve the cluster. Values here are the *conservative* prod ceiling;
+# overlays may tighten them.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: wco-quota
+spec:
+  hard:
+    requests.cpu: "60"
+    requests.memory: 120Gi
+    limits.cpu: "120"
+    limits.memory: 240Gi
+    requests.storage: 500Gi
+    persistentvolumeclaims: "40"
+    pods: "200"
+    services: "30"
+    secrets: "100"
+    configmaps: "100"
+---
+# Per-workload CPU/memory guardrails (prod).
+apiVersion: apps/v1
+kind: LimitRange
+metadata:
+  name: wco-limits
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+      max:
+        cpu: "4"
+        memory: 4Gi
+      min:
+        cpu: 25m
+        memory: 64Mi

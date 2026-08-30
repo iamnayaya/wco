@@ -1,62 +1,52 @@
-# Onboarding Guide — your first week on WCO
+# Onboarding — Team Welcome & Index
 
-## Day 1: environment
+Welcome to WCO! This is the master index for new team members and anyone who wants the fast path to productivity.
+
+## The onboarding path (new engineer productive in ≤ 5 days)
+
+| Step | Guide | Day |
+|---|---|---|
+| Welcome & team | [Welcome](./01-welcome.md) | Day 1 |
+| Environment running | [First week](./02-first-week.md) + [Env setup](./03-development-environment-setup.md) | Day 1 |
+| Architecture tour | [First week](./02-first-week.md#day-2) + [Architecture overview](../developer/02-architecture-overview.md) | Day 2 |
+| Conventions | [First week](./02-first-week.md#day-3) + [Code style](../developer/05-code-style-guide.md) | Day 3 |
+| Ship first PR | [Code review guide](./04-code-review-guide.md) + [Testing guide](./05-testing-guide.md) | Day 4 |
+| Production shape | [Deployment guide](./06-deployment-guide.md) + [Team processes](./08-team-processes.md) | Day 5 |
+
+## Table of contents
+
+| # | Topic |
+|---|---|
+| 01 | [Welcome](./01-welcome.md) — who we are, communication, 30-day goals |
+| 02 | [Your first week](./02-first-week.md) — day-by-day path |
+| 03 | [Development environment setup](./03-development-environment-setup.md) — local stack |
+| 04 | [Code review guide](./04-code-review-guide.md) — PRs & reviews |
+| 05 | [Testing guide](./05-testing-guide.md) — how we test |
+| 06 | [Deployment guide](./06-deployment-guide.md) — how code ships |
+| 08 | [Team processes](./08-team-processes.md) — rituals & agreements |
+| 09 | [Resources](./09-resources.md) — links, tools, where things live |
+
+## Quick start (Day 1)
 
 ```bash
 git clone <repo> wco && cd wco
-./infra/scripts/bootstrap.sh        # installs, boots infra, migrates, seeds
-cp .env.example .env                # then fill in what you have
-npm run dev                         # turbo runs backend + frontend + ai-engine
+./infra/scripts/bootstrap.sh
+cp .env.example .env && npm run dev
 ```
+Verify: `curl localhost:4000/health`; web app http://localhost:3000 (seed credentials in `packages/database/prisma/seed.ts`).
 
-Verify:
+## Day-1 environment cheat sheet
 
-- API health: `curl localhost:4000/health` → `{"status":"ok", ...}`
-- Web app: http://localhost:3000 (login: seed merchant credentials in `packages/database/prisma/seed.ts`)
-- RabbitMQ UI: http://localhost:15672 (wco / from docker-compose)
-
-## Day 2: architecture in 30 minutes
-
-Read, in order:
-
-1. `docs/architecture/system-architecture.md` — the big picture + Mermaid diagrams
-2. `docs/architecture/data-flow.md` — how a WhatsApp message becomes money
-3. `docs/adr/` — why it's built this way (outbox, tenancy, monorepo)
-
-Then trace **one real flow end-to-end**: inbound message → webhook-handler → queue → AI reply. Set breakpoints or add temp logs; the code is small enough to hold in your head.
-
-## Day 3: conventions that will get your PR approved
-
-- **Tenancy:** every query touching tenant data must scope by `storeId` from `TenantContext`. No exceptions.
-- **Money:** `Prisma.Decimal` in DB; convert at the edges only.
-- **Events:** state changes emit outbox rows, not direct publishes (see ADR-002).
-- **Validation:** DTOs with class-validator on every endpoint; whitelist mode strips unknown fields.
-- **Errors:** throw Nest built-ins (`NotFoundException`, …); never return `{ error }` manually.
-
-## Day 4: ship something small
-
-Good first tasks: a new analytics field, an inbox filter, a webhook event type. The loop:
-
-```bash
-npm run dev --workspace=@wco/backend
-npm run test --workspace=@wco/backend
-npm run lint && npm run typecheck
-```
-
-Commit style: conventional commits (`feat(orders): ...`) — enforced by commitlint + husky.
-
-## Day 5: production shape
-
-- Deploys: GitHub Actions → ECR/EKS via ArgoCD (`infra/kubernetes`, overlays per env)
-- Secrets: AWS Secrets Manager → External Secrets Operator; nothing secret in Git, ever
-- Dashboards: Grafana (infra/prometheus rules) + PagerDuty for SEV1
-- On-call: rotate documented in Notion; runbook links live in each alert annotation
+- **API:** localhost:4000 · docs localhost:4000/api/docs · GraphQL localhost:4000/graphql
+- **Frontend:** localhost:3000 · **Admin:** localhost:3001 · **AI:** localhost:5000
+- **RabbitMQ UI:** localhost:15672 (guest/guest)
 
 ## Who to ask
 
-| Area | Where to look first |
+| Area | Where |
 |---|---|
-| Backend/API | `apps/backend/src/modules/<module>` + module README if present |
+| Backend/API | `apps/backend/src/modules/<module>` |
 | AI engine | `apps/ai-engine/src/{services,modules}` |
 | Webhooks/PSPs | `apps/webhook-handler/src/modules` |
-| Infra | `infra/kubernetes`, run `kubectl get events -n wco-dev` before asking |
+| Infra | `infra/kubernetes`; `kubectl get events -n wco-dev` |
+| Anything | onboarding buddy / squad tech lead |

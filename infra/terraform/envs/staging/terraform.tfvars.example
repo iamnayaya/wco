@@ -1,0 +1,12 @@
+# Staging environment — production-equivalent shape, reduced capacity.
+# Copy to terraform.tfvars (never commit secrets).
+environment        = "staging"
+region             = "af-south-1"
+secondary_region   = "eu-west-1"
+cluster_name       = "wco-staging"
+domain_name        = "wco.staging"
+
+db_password       = "REPLACE"
+rabbitmq_password = "REPLACE"
+
+alarm_email = "platform-alerts@wco.africa"

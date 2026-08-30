@@ -1,18 +1,25 @@
 /**
- * WCO design tokens — single source of truth for color + spacing.
- * Tailwind config and the mobile kit both mirror these values.
+ * WCO design tokens — legacy flat map.
+ *
+ * Kept for backward compatibility. New code should import from
+ * `./design-tokens` for the full system; this object is derived from it and
+ * mirrors the old surface (`color.brand`, `radius.*`, etc.).
  */
+
+import { brand, semantic, neutral } from './design-tokens/color';
+import { radii } from './design-tokens/layout';
+
 export const tokens = {
   color: {
-    brand: '#059669',
-    brandDark: '#047857',
-    surface: '#f8fafc',
-    ink: '#0f172a',
-    muted: '#64748b',
-    danger: '#dc2626',
-    warning: '#d97706',
+    brand: brand['600'],
+    brandDark: brand['700'],
+    surface: neutral['50'],
+    ink: neutral['900'],
+    muted: neutral['500'],
+    danger: semantic.danger.DEFAULT,
+    warning: semantic.warning.DEFAULT,
   },
-  radius: { sm: '6px', md: '10px', lg: '12px' },
+  radius: { sm: radii.sm, md: radii.md, lg: radii.lg },
 } as const;
 
 export type WcoTokens = typeof tokens;

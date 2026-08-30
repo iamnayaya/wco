@@ -1,0 +1,27 @@
+# Persistent storage for workloads that need local disk (or a self-hosted
+# Postgres/Redis escape hatch). In managed WCO environments we prefer RDS +
+# ElastiCache, so these are provided for single-node/on-prem and local Kind
+# clusters. In EKS they are typically replaced by EBS CSI / EFS CSI drivers.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ai-engine
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-engine

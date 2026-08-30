@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support hub
+    url: https://help.wco.africa
+    about: Non-bug questions and account help.
+  - name: Security vulnerability
+    url: https://security.wco.africa/responsible-disclosure
+    about: Please report vulnerabilities privately — do not open a public issue.
+  - name: Platform status
+    url: https://status.wco.africa
+    about: Check current uptime/incidents before filing an outage report.

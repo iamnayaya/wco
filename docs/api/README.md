@@ -10,6 +10,7 @@
 
 | Document | Contents |
 |---|---|
+| [introduction.md](./introduction.md) | What the API is, why use it, module overview, support |
 | [architecture.md](./architecture.md) | API architecture, gateway design, service communication, auth flows |
 | [design-guidelines.md](./design-guidelines.md) | REST conventions, status codes, error catalog, pagination, filtering, versioning, idempotency |
 | [authentication-authorization.md](./authentication-authorization.md) | JWT lifecycle, OAuth 2.0 client-credentials, API keys, RBAC matrix, store scoping |
@@ -20,6 +21,7 @@
 | [webhooks.md](./webhooks.md) | Outbound webhook signing/retries + inbound provider webhook routing |
 | [graphql.md](./graphql.md) | GraphQL endpoint, schema principles, when to use vs REST |
 | [examples.md](./examples.md) | cURL / JavaScript / Python recipes, Postman collection, SDK generation |
+| [sdk-libraries.md](./sdk-libraries.md) | Official SDKs (TS/Python/Dart) & usage |
 | [openapi.yaml](./openapi.yaml) | **Complete OpenAPI 3.1 specification** (source of truth for codegen) |
 
 Related: [Database docs](../database/README.md) · [System architecture](../architecture/system-architecture.md)

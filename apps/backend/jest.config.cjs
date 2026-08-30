@@ -27,6 +27,17 @@ module.exports = {
   setupFiles: ['<rootDir>/tests/setup.ts'],
   collectCoverageFrom: ['src/**/*.ts', '!src/main.ts', '!src/worker.ts', '!src/**/*.d.ts'],
   coverageDirectory: './coverage',
+  coverageThreshold: {
+    // Global regression gate: coverage is aggregated across unit, integration
+    // and e2e suites so a healthy baseline can be enforced without failing on
+    // a single thin module. Raise these as coverage improves with CI reports.
+    global: {
+      statements: 70,
+      branches: 60,
+      functions: 70,
+      lines: 70,
+    },
+  },
   testTimeout: 15000,
   clearMocks: true,
 };

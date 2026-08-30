@@ -1,0 +1,79 @@
+name: Mobile
+
+on:
+  pull_request:
+    paths:
+      - "apps/mobile/**"
+      - "packages/**"
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+  EXPO_VERSION: "51"
+  EAS_CLI_VERSION: "12"
+  APP_ID: com.wco.mobile
+  SCHEME: wco
+
+jobs:
+  quality:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint mobile
+        run: npx turbo run lint --filter=mobile
+
+      - name: Typecheck mobile
+        run: npx turbo run typecheck --filter=mobile
+
+      - name: Jest unit tests
+        run: npx turbo run test:unit --filter=mobile
+
+  build-android:
+    name: Build Android (EAS)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: quality
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli@${{ env.EAS_CLI_VERSION }}
+
+      - name: Configure EAS secrets
+        working-directory: apps/mobile
+        run: |
+          # Pull sensitive env from GH secrets into EAS (never in Git)
+          eas secrets:set --non-interactive \
+            GOOGLE_SERVICES_JSON <<< "${{ secrets.GOOGLE_SERVICES_JSON }}"
+          eas secret:set --non-interactive \
+            API_URL_PROD <<< "https://api.wco.africa"
+
+      - name: Submit to Play Console
+        working-directory: apps/mobile
+        run: |
+          eas build --platform android --profile production --non-interactive \
+            --message "CI build ${{ github.sha }}"

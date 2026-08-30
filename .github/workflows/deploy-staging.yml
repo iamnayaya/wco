@@ -1,0 +1,64 @@
+name: Staging Deploy
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency: staging-deploy
+
+env:
+  REGISTRY: ghcr.io
+  NAMESPACE: wco-staging
+
+jobs:
+  deploy:
+    name: Deploy → Staging
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure kubectl (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_DEPLOY_ROLE }}
+          aws-region: af-south-1
+
+      - name: Run database migrations (staging)
+        run: |
+          kubectl create job --from=cronjob/db-migrate \
+            "migrate-$(git rev-parse --short HEAD)" -n ${{ env.NAMESPACE }} || true
+          kubectl wait --for=condition=complete \
+            "job/migrate-$(git rev-parse --short HEAD)" -n ${{ env.NAMESPACE }} \
+            --timeout=600s 2>/dev/null || echo "::warning::No migration job found, skipping"
+
+      - name: Rollout new images
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          for app in backend webhook-handler ai-engine frontend; do
+            kubectl set image deployment/$app \
+              $app=${{ env.REGISTRY }}/wco/wco/$app:${SHA}-main \
+              -n ${{ env.NAMESPACE }} \
+              --record || echo "::warning::No deployment for $app"
+          done
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/backend -n ${{ env.NAMESPACE }} --timeout=300s
+          kubectl rollout status deployment/frontend -n ${{ env.NAMESPACE }} --timeout=300s
+
+      - name: Smoke test
+        run: |
+          curl -fsS https://api.staging.wco.africa/health | grep -q '"status":"ok"'
+
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: ${{ secrets.SLACK_DEPLOY_CHANNEL }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

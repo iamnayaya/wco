@@ -2,6 +2,10 @@
 
 > **AI-powered operating system for informal traders in emerging markets to run WhatsApp-based businesses with speed, efficiency, and zero hassle.**
 
+[![CI](https://github.com/anomalyco/wco/actions/workflows/ci.yml/badge.svg)](https://github.com/anomalyco/wco/actions/workflows/ci.yml)
+[![QA](https://github.com/anomalyco/wco/actions/workflows/qa.yml/badge.svg)](https://github.com/anomalyco/wco/actions/workflows/qa.yml)
+[![codecov](https://codecov.io/gh/anomalyco/wco/branch/main/graph/badge.svg)](https://codecov.io/gh/anomalyco/wco)
+
 ## Overview
 
 WCO is a comprehensive SaaS platform that enables informal traders in Nigeria, Ghana, Kenya, and other emerging markets to automate and scale their WhatsApp commerce operations. Built with modern technology stack following Silicon Valley best practices for scalability, security, and maintainability.
@@ -246,6 +250,32 @@ See [Security Documentation](docs/security/README.md) for details.
 - **Traces**: OpenTelemetry + Jaeger
 - **Alerts**: Alertmanager + PagerDuty integration
 - **Uptime**: Synthetic monitoring with Datadog
+
+## Quality Assurance
+
+Percentile-visible quality gates run on **every** PR and push:
+
+- **Unit**: backend (Jest + ts-jest) & frontend (Vitest + Testing Library) — see
+  [Testing & QA](docs/qa/README.md).
+- **Coverage gate**: enforced thresholds (backend 70/60/70/70, frontend
+  80/70/80/80) — `yarn test:coverage`.
+- **E2E**: Playwright browser flows (auth, orders) with an in-process API mock.
+- **Accessibility**: automatic axe scans for WCAG 2.1 AA on all key routes.
+- **Visual regression**: pixelmatch diffing against committed baselines.
+- **Performance**: k6 budgets (p95 < 500ms, errors < 1%) run nightly.
+- **DAST**: OWASP ZAP baseline; **dependency policy**: Snyk.
+- **Defect management**: structured bug forms + severity SLAs (S1–S4) +
+  triage process — see [QA process](docs/qa/process.md).
+
+Run everything locally:
+
+```sh
+yarn test:unit          # backend + frontend unit
+yarn test:coverage      # with threshold enforcement
+yarn --cwd apps/frontend test:e2e
+yarn --cwd apps/frontend test:visual
+k6 run infra/qa/k6/buyer-journey.js
+```
 
 ## Contributing
 

@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Centralized logging for WCO.
+# Fluent Bit collects all container/Pod logs on every node and streams them to
+# Loki (30-day retention, filesystem single-replica for cost). Loki is exposed
+# to Grafana for querying. Datadog (infra/monitoring/datadog) is an alternative
+# commercial path if a managed backend is preferred.
+namespace: wco-observability
+
+commonLabels:
+  app.kubernetes.io/part-of: wco
+  app.kubernetes.io/managed-by: argocd
+
+resources:
+  - fluent-bit.yaml
+  - loki.yaml

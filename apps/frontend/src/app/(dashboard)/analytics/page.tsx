@@ -1,103 +1,142 @@
 'use client';
 
-import { useAnalyticsSummary, useTopProducts, useFunnel } from '../../../hooks/use-analytics';
-import { Card, Spinner, StatCard } from '../../../components/ui';
-import { formatMoney } from '../../../lib/utils/format';
+import { useState } from 'react';
+import { motion } from 'framer-motion';
+import { BarChart3, FileText, RefreshCw } from 'lucide-react';
+import { Button } from '../../../components/ui';
+import { staggerContainer, VIEWPORT_ONCE } from '../../../lib/utils/animations';
+import { useAuthStore } from '../../../store/slices/auth-slice';
+import { DateRangeSelector } from '../../../components/analytics/date-range-selector';
+import { useGenerateReport } from '../../../components/analytics/hooks';
+import {
+  presetRange,
+  type DateRange,
+} from '../../../components/analytics/helpers';
+import type { ReportType } from '../../../components/analytics/types';
+import {
+  OverviewSection,
+  SalesSection,
+  CustomersSection,
+  ProductsSection,
+  MessagesSection,
+  PaymentsSection,
+  DeliveriesSection,
+  ReportsSection,
+  InsightsSection,
+} from '../../../components/analytics/sections';
+
+const TABS: Array<{ id: string; label: string; reportType: ReportType }> = [
+  { id: 'overview', label: 'Overview', reportType: 'COMPREHENSIVE' },
+  { id: 'sales', label: 'Sales', reportType: 'SALES' },
+  { id: 'customers', label: 'Customers', reportType: 'CUSTOMERS' },
+  { id: 'products', label: 'Products', reportType: 'PRODUCTS' },
+  { id: 'messages', label: 'Messages', reportType: 'MESSAGES' },
+  { id: 'payments', label: 'Payments', reportType: 'PAYMENTS' },
+  { id: 'deliveries', label: 'Deliveries', reportType: 'DELIVERIES' },
+  { id: 'reports', label: 'Reports', reportType: 'COMPREHENSIVE' },
+  { id: 'insights', label: 'AI Insights', reportType: 'COMPREHENSIVE' },
+];
 
 export default function AnalyticsPage() {
-  const summary = useAnalyticsSummary();
-  const topProducts = useTopProducts();
-  const funnel = useFunnel();
+  const role = useAuthStore((s) => s.user?.role);
+  const canManage = role === 'OWNER' || role === 'ADMIN';
 
-  if (summary.isLoading) {
-    return (
-      <div className="flex h-64 items-center justify-center"><Spinner /></div>
-    );
+  const [tab, setTab] = useState('overview');
+  const [range, setRange] = useState<DateRange>({ ...presetRange('30d'), key: '30d', label: '30 days' });
+  const [exporting, setExporting] = useState(false);
+
+  const generateReport = useGenerateReport();
+  const activeTab = TABS.find((t) => t.id === tab) ?? TABS[0];
+
+  async function handleExport() {
+    if (!canManage) return;
+    setExporting(true);
+    try {
+      await generateReport.mutateAsync({
+        reportType: activeTab.reportType,
+        format: 'CSV',
+        dateFrom: range.from,
+        dateTo: range.to,
+      });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function renderTab() {
+    switch (tab) {
+      case 'sales':
+        return <SalesSection from={range.from} to={range.to} />;
+      case 'customers':
+        return <CustomersSection from={range.from} to={range.to} />;
+      case 'products':
+        return <ProductsSection from={range.from} to={range.to} />;
+      case 'messages':
+        return <MessagesSection from={range.from} to={range.to} />;
+      case 'payments':
+        return <PaymentsSection from={range.from} to={range.to} />;
+      case 'deliveries':
+        return <DeliveriesSection from={range.from} to={range.to} />;
+      case 'reports':
+        return <ReportsSection from={range.from} to={range.to} canManage={canManage} />;
+      case 'insights':
+        return <InsightsSection from={range.from} to={range.to} canManage={canManage} />;
+      case 'overview':
+      default:
+        return <OverviewSection from={range.from} to={range.to} />;
+    }
   }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-lg font-bold text-slate-900">Analytics</h1>
-
-      <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Revenue today" value={formatMoney(summary.data?.today.revenue ?? 0)} delta={summary.data?.vsYesterday.revenueDeltaPct ?? null} />
-        <StatCard label="Orders today" value={String(summary.data?.today.orders ?? 0)} delta={summary.data?.vsYesterday.ordersDeltaPct ?? null} />
-        <StatCard label="Week revenue" value={formatMoney(summary.data?.week.revenue ?? 0)} />
-        <StatCard label="AI resolution rate" value={`${Math.round((summary.data?.week.aiResolutionRate ?? 0) * 100)}%`} />
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <h2 className="text-sm font-semibold text-slate-900">Top products (30 days)</h2>
-          <ol className="mt-3 space-y-2">
-            {(topProducts.data ?? []).map((p, i) => {
-              const max = Math.max(...(topProducts.data ?? [{ revenue: 1 }]).map((x) => x.revenue), 1);
-              return (
-                <li key={p.productId} className="space-y-1">
-                  <div className="flex justify-between text-sm">
-                    <span className="truncate pr-2">
-                      <span className="mr-1.5 text-xs font-bold text-slate-400">{i + 1}.</span>
-                      {p.name}
-                    </span>
-                    <span className="shrink-0 font-semibold tabular-nums">
-                      {formatMoney(p.revenue)} <span className="font-normal text-slate-400">· {p.unitsSold} sold</span>
-                    </span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-slate-100">
-                    <div className="h-full rounded-full bg-emerald-500" style={{ width: `${(p.revenue / max) * 100}%` }} />
-                  </div>
-                </li>
-              );
-            })}
-            {(topProducts.data?.length ?? 0) === 0 && (
-              <li className="py-6 text-center text-sm text-slate-500">No sales data yet.</li>
-            )}
-          </ol>
-        </Card>
-
-        <Card>
-          <h2 className="text-sm font-semibold text-slate-900">Conversion funnel (30 days)</h2>
-          <dl className="mt-4 space-y-3">
-            <FunnelRow label="Conversations started" value={funnel.data?.conversations ?? 0} total={funnel.data?.conversations ?? 0} tone="bg-sky-500" />
-            <FunnelRow label="Orders created" value={funnel.data?.ordersCreated ?? 0} total={funnel.data?.conversations ?? 1} tone="bg-indigo-500" hint={pct(funnel.data?.chatToOrderRate)} />
-            <FunnelRow label="Orders paid" value={funnel.data?.ordersPaid ?? 0} total={funnel.data?.ordersCreated ?? 1} tone="bg-emerald-500" hint={pct(funnel.data?.checkoutCompletion)} />
-          </dl>
-        </Card>
-      </section>
-    </div>
-  );
-}
-
-function FunnelRow({
-  label,
-  value,
-  total,
-  tone,
-  hint,
-}: {
-  label: string;
-  value: number;
-  total: number;
-  tone: string;
-  hint?: string;
-}) {
-  const width = total > 0 ? Math.max(2, (value / total) * 100) : 0;
-  return (
-    <div>
-      <div className="flex items-baseline justify-between text-sm">
-        <dt className="text-slate-600">{label}</dt>
-        <dd className="font-semibold tabular-nums">
-          {value}
-          {hint && <span className="ml-2 text-xs font-normal text-slate-400">{hint}</span>}
-        </dd>
+    <motion.div
+      variants={staggerContainer}
+      initial="hidden"
+      animate="visible"
+      viewport={VIEWPORT_ONCE}
+      className="space-y-4"
+    >
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="h-5 w-5 text-emerald-600" />
+          <h1 className="text-lg font-bold text-slate-900 dark:text-white">Analytics</h1>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" className="!px-3 !py-2 text-xs" aria-label="Refresh">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+          {canManage && (
+            <Button variant="secondary" className="!px-3 !py-2 text-xs" onClick={() => void handleExport()} loading={exporting}>
+              <FileText className="h-3.5 w-3.5" /> Export CSV
+            </Button>
+          )}
+        </div>
       </div>
-      <div className="mt-1 h-2 rounded-full bg-slate-100">
-        <div className={`h-full rounded-full ${tone}`} style={{ width: `${width}%` }} />
-      </div>
-    </div>
-  );
-}
 
-function pct(value: number | null | undefined): string {
-  return value == null ? '' : `${(value * 100).toFixed(1)}%`;
+      {/* Date range */}
+      <DateRangeSelector value={range} onRangeChange={setRange} />
+
+      {/* Tabs */}
+      <nav aria-label="Analytics sections" className="flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-800 dark:bg-slate-900">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            aria-current={tab === t.id ? 'page' : undefined}
+            className={
+              tab === t.id
+                ? 'whitespace-nowrap rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white'
+                : 'whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {/* Content */}
+      {renderTab()}
+    </motion.div>
+  );
 }

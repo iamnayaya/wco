@@ -1,0 +1,108 @@
+name: Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+  schedule:
+    - cron: "0 6 * * *" # nightly drift detection
+
+concurrency:
+  group: terraform-${{ github.ref == 'refs/heads/main' && 'prod' || github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: af-south-1
+  TF_VERSION: 1.8.5
+
+jobs:
+  terraform-plan:
+    name: Plan (dev)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Init
+        run: terraform init
+        working-directory: infra/terraform
+
+      - name: Get secret values (SSM/secrets → tfvars) 
+        run: |
+          echo "db_password=$(aws ssm get-parameter --name /wco/dev/rds-password --with-decryption --query Parameter.Value --output text)" > /tmp/plan.tfvars
+          echo "rabbitmq_password=$(aws ssm get-parameter --name /wco/dev/mq-password --with-decryption --query Parameter.Value --output text)" >> /tmp/plan.tfvars
+          printf '\nenvironment = "dev"\nregion = "af-south-1"\n' >> /tmp/plan.tfvars
+
+      - name: Plan
+        id: plan
+        run: terraform plan -no-color -var-file=/tmp/plan.tfvars -out=plan.tfplan
+        working-directory: infra/terraform
+
+      - name: Publish plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const out = fs.readFileSync('infra/terraform/plan.tfplan', 'utf8');
+            const body = "## Terraform Plan (dev)\n```diff\n" + out.slice(0, 30000) + "\n```";
+            github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+
+  terraform-apply-prod:
+    name: Apply (production)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production-infra
+    needs: [terraform-plan]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_PROD_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Init
+        run: terraform init
+        working-directory: infra/terraform
+
+      - name: Resolve secrets
+        run: |
+          echo "db_password=$(aws ssm get-parameter --name /wco/prod/rds-password --with-decryption --query Parameter.Value --output text)" > /tmp/prod.tfvars
+          echo "rabbitmq_password=$(aws ssm get-parameter --name /wco/prod/mq-password --with-decryption --query Parameter.Value --output text)" >> /tmp/prod.tfvars
+          printf '\nenvironment = "prod"\nregion = "af-south-1"\n' >> /tmp/prod.tfvars
+
+      - run: terraform plan -no-color -var-file=/tmp/prod.tfvars -out=plan.tfplan
+        working-directory: infra/terraform
+
+      - name: Apply
+        run: terraform apply -no-color -auto-approve plan.tfplan
+        working-directory: infra/terraform
+
+      - name: Sync EKS kubeconfig for subsequent deploys
+        run: aws eks update-kubeconfig --name wco --region ${{ env.AWS_REGION }}

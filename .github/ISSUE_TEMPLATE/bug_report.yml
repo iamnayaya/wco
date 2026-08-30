@@ -1,0 +1,105 @@
+name: Bug report
+description: Report a defect — structured for automated triage and SLA tracking.
+title: "[bug] <short summary>"
+labels:
+  - type/bug
+  - status/triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Fields marked * are required and feed the
+        triage dashboard. **Redact all PII** before pasting logs/traces.
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: What's the blast radius?
+      options:
+        - S1 – outage, data loss, or money loss
+        - S2 – major feature broken, workaround exists
+        - S3 – minor bug, no workaround needed
+        - S4 – cosmetic / friction only
+      default: 2
+    validations:
+      required: true
+  - type: dropdown
+    id: service
+    attributes:
+      label: Service(s)
+      description: Which component is affected? (multi-select)
+      multiple: true
+      options:
+        - backend
+        - frontend
+        - ai-engine
+        - webhook-handler
+        - admin-dashboard
+        - mobile
+        - infra / ci
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - production
+        - staging
+        - development
+        - local
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Deployed sha or package version you reproduced on.
+      placeholder: "e.g. a3f2c1b-main"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, deterministic repro steps.
+      placeholder: |
+        1. Go to ...
+        2. Click ...
+        3. Observe ...
+      value: "1. "
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      placeholder: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      placeholder: What actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs / traces / screenshots
+      description: |
+        Paste Sentry/Datadog links, Playwright failure pages, or console
+        snippets. Redact PII.
+      placeholder: |
+        ```text
+        error=...
+        ```
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Reporter checklist
+      options:
+        - label: I confirmed it still reproduces on the latest deploy
+        - label: I checked for an existing/duplicate issue
+        - label: I attached evidence (link, screenshot, trace)

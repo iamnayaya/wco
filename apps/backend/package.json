@@ -13,6 +13,7 @@
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\" --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "jest",
+    "test:coverage": "jest --coverage --runInBand --forceExit",
     "test:unit": "jest --testPathPattern=tests/unit",
     "test:integration": "jest --testPathPattern=tests/integration --runInBand",
     "db:generate": "prisma generate --schema ../../packages/database/prisma/schema.prisma",

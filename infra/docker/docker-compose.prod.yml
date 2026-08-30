@@ -1,0 +1,136 @@
+# =============================================================================
+# WCO Production-style local stack
+#
+# Runs the *production* images (built via `npm run docker:build` at target
+# `production`) exactly as they'll ship — non-root, read-only fs, healthchecks,
+# bounded resources. Useful for staging-on-a-VPS and e2e smoke tests before K8s.
+#
+# Usage:
+#   docker build -f infra/docker/Dockerfile.backend     -t wco/backend:prod     --target production .
+#   docker build -f infra/docker/Dockerfile.frontend    -t wco/frontend:prod    --target production .
+#   docker build -f infra/docker/Dockerfile.ai-engine   -t wco/ai-engine:prod   --target production .
+#   docker build -f infra/docker/Dockerfile.webhook-handler -t wco/webhook-handler:prod .
+#   docker compose -f infra/docker/docker-compose.prod.yml up -d
+# =============================================================================
+
+x-app-limits: &app-limits
+  mem_limit: 2g
+  pids_limit: 256
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wco
+      POSTGRES_USER: wco_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wco_app -d wco"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+  backend:
+    image: wco/backend:prod
+    <<: *app-limits
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://wco_app:${POSTGRES_PASSWORD}@postgres:5432/wco
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?set in .env}
+      SENTRY_DSN: ${SENTRY_DSN}
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+  webhook-handler:
+    image: wco/webhook-handler:prod
+    <<: *app-limits
+    environment:
+      NODE_ENV: production
+      PORT: 4100
+      DATABASE_URL: postgresql://wco_app:${POSTGRES_PASSWORD}@postgres:5432/wco
+    ports:
+      - "4100:4100"
+    depends_on:
+      postgres: { condition: service_healthy }
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+  ai-engine:
+    image: wco/ai-engine:prod
+    <<: *app-limits
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "5000:5000"
+    depends_on:
+      redis: { condition: service_healthy }
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    image: wco/frontend:prod
+    <<: *app-limits
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend: { condition: service_started }
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pg_data:
+  redis_data:
+
+networks:
+  default:
+    name: wco-network-prod
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

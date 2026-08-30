@@ -43,6 +43,14 @@ pnpm-debug.log*
 # Testing
 coverage/
 .nyc_output/
+# Playwright
+apps/frontend/test-results/
+apps/frontend/playwright-report/
+apps/frontend/blob-report/
+apps/frontend/playwright/.cache/
+# Visual regression artifacts (baselines ARE committed)
+apps/frontend/tests/visual/current/
+apps/frontend/tests/visual/diffs/
 
 # Docker
 .docker/

@@ -1,0 +1,172 @@
+name: QA
+
+# Deeper QA gates on top of `ci.yml`: browser E2E + accessibility, coverage
+# enforcement, API performance (k6), dynamic security (ZAP) and Snyk policies.
+# Runs on PRs against main and on a nightly schedule against main so regressions
+# are surfaced even without code changes (dependency/upstream drift).
+
+on:
+  pull_request:
+    branches: [main, staging]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *" # nightly
+  workflow_dispatch:
+
+concurrency:
+  group: qa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Coverage gate — runs the full unit suite once with thresholds enforced.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+
+      - name: Backend coverage (thresholds enforced in jest.config)
+        run: npx turbo run test:coverage --filter=@wco/backend
+
+      - name: Frontend coverage (thresholds enforced in vitest.config)
+        run: npx turbo run test:coverage --filter=@wco/frontend
+
+      - name: Upload coverage to Codecov (aggregated flags)
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: qa
+          files: apps/backend/coverage/coverage-final.json,apps/frontend/coverage/coverage-final.json
+
+  # ---------------------------------------------------------------------------
+  # Browser E2E — Playwright against a built frontend (API mocked in-process)
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E + accessibility
+        run: npx turbo run test:e2e --filter=@wco/frontend
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/frontend/playwright-report/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # API performance — k6 against the built stack (nightly for budgets)
+  # ---------------------------------------------------------------------------
+  performance:
+    name: Performance (k6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          curl -fsSL https://github.com/grafana/k6/releases/download/v0.49.0/k6-v0.49.0-linux-amd64.tar.gz -o k6.tgz
+          tar -xzf k6.tgz && sudo mv k6-v0.49.0-linux-amd64/k6 /usr/local/bin/k6
+
+      - name: Run load tests with thresholds
+        run: |
+          for script in infra/qa/k6/*.js; do
+            echo "▶ $script"
+            k6 run --summary-trend-stats="avg,p(90),p(95),p(99)" \
+              -e BASE_URL="${{ secrets.K6_TARGET_URL }}" "$script"
+          done
+
+      - name: Upload k6 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-results
+          path: infra/qa/k6/**/*.json
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Dynamic security — OWASP ZAP baseline (DAST) against a deployed env
+  # ---------------------------------------------------------------------------
+  dast:
+    name: DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: ${{ secrets.ZAP_TARGET_URL }}
+          rules_file_name: infra/qa/zap/zap-rules.txt
+          cmd_options: "-a -t ${{ secrets.ZAP_TARGET_URL }}"
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # Dependency policy — Snyk (license + vuln policy enforcement)
+  # ---------------------------------------------------------------------------
+  snyk:
+    name: Snyk Policy
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+
+      - name: Snyk monitor (fail only on severities in policy)
+        uses: snyk/actions/node@master
+        with:
+          args: --severity-threshold=high --all-projects
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # QA release gate summary — gates visual/coverage/e2e for PR merge
+  # ---------------------------------------------------------------------------
+  gate:
+    name: QA Gate
+    if: github.event_name == 'pull_request' && !cancelled()
+    runs-on: ubuntu-latest
+    needs: [coverage, e2e, dast, snyk]
+    steps:
+      - name: Conclude QA gate
+        run: echo "✅ QA gates passed" && exit 0

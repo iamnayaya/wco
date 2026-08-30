@@ -1,0 +1,47 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: wco-slos
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: wco-app-slos
+      rules:
+        # Availability: < 99.9% of 5xx-free requests over 5m → page on-call.
+        - alert: WcoErrorRateHigh
+          expr: |
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+              / clamp_min(sum(rate(http_requests_total[5m])), 1)
+            > 0.05
+          for: 5m
+          labels:
+            severity: page
+          annotations:
+            summary: "Error rate above 5% (env: {{ $labels.service }})"
+            description: "High 5xx rate detected on {{ $labels.service }} in {{ $labels.namespace }}."
+
+        # Latency p99 > 800ms over 10m (most endpoints are sub-200ms).
+        - alert: WcoLatencyP99High
+          expr: |
+            histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m]))
+              by (le, service)) > 0.8
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "p99 latency above 800ms ({{ $labels.service }})"
+            description: "p99 latency is {{ $value }}s on {{ $labels.service }}."
+
+      # Queue/lag guardrails for the async webhook path.
+    - name: wco-async
+      rules:
+        - alert: WcoWebhookQueueLagging
+          expr: |
+            rabbitmq_queue_messages_ready{queue=~"webhook.*"} > 5000
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Webhook queue backing up"
+            description: "More than 5000 ready messages on {{ $labels.queue }}."
